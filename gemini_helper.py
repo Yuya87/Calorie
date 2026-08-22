@@ -3,6 +3,12 @@ import json
 from google import genai
 from google.genai import types
 
+import streamlit as st
+
+# Streamlit Secrets から API キーを読み込む
+api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key)
+
 def get_client():
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
