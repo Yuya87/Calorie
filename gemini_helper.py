@@ -50,9 +50,9 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
         contents.append(image)
 
     # gemini-2.0-flash を使用する場合
-response = client.models.generate_content(
-    model="gemini-2.0-flash",
-    contents=contents
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=contents
 )
     )
 
