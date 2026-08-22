@@ -6,7 +6,6 @@ from google import genai
 from google.genai import types
 
 def get_client():
-    # secrets または os.environ から取得し、余計な空白を除去
     api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY が設定されていません。StreamlitのSecretsを確認してください。")
@@ -63,7 +62,6 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     if image is not None:
         try:
             img_byte_arr = io.BytesIO()
-            # フォーマットが不明な場合はPNGで保存
             img_format = image.format if image.format else 'PNG'
             image.save(img_byte_arr, format=img_format)
             img_bytes = img_byte_arr.getvalue()
@@ -80,10 +78,10 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     if not contents:
         contents.append("こんにちは")
 
-    # API呼び出し
+    # API呼び出し（最新の gemini-3.6-flash を使用）
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.6-flash",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -93,7 +91,6 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
         return json.loads(response.text)
         
     except Exception as e:
-        # 詳細なエラーメッセージを表示して原因特定を容易にする
         st.error(f"Gemini API呼び出しエラー: {e}")
         return {
             "action_type": "GENERAL_CHAT",
