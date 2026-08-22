@@ -46,25 +46,27 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     }
     """
 
+    # 送信用のリストを綺麗に作成
     contents = []
-    for msg in chat_history[-6:]:
-        contents.append(f"{msg['role']}: {msg['content']}")
     
+    # システムプロンプト（指示文）を先頭に入れる
+    contents.append(system_instruction)
+    
+    # 過去の会話履歴をテキストとしてまとめる
+    history_text = ""
+    for msg in chat_history[-6:]:
+        history_text += f"{msg['role']}: {msg['content']}\n"
+    if history_text:
+        contents.append(f"【会話履歴】\n{history_text}")
+    
+    # 今回のユーザー入力
     if user_text:
         contents.append(f"user: {user_text}")
     if image:
         contents.append(image)
 
-    # gemini-2.0-flash を使用する場合
+    # API呼び出し
     response = client.models.generate_content(
         model="gemini-2.0-flash",
         contents=contents
     )
-
-    try:
-        return json.loads(response.text)
-    except Exception:
-        return {
-            "action_type": "GENERAL_CHAT",
-            "assistant_response": response.text or "解析結果の読み込みに失敗しました。"
-        }
