@@ -10,7 +10,7 @@ api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key)
 
 def get_client():
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY が設定されていません。StreamlitのSecretsを確認してください。")
     return genai.Client(api_key=api_key)
@@ -68,5 +68,8 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     # API呼び出し
     response = client.models.generate_content(
         model="gemini-2.0-flash",
-        contents=contents
+        contents=contents,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+        )
     )
