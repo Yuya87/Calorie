@@ -46,30 +46,26 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     }
     """
 
-    # 送信用のリストを綺麗に作成
+    # contents には会話履歴やユーザー入力のみを入れる（system_instructionは含めない）
     contents = []
     
-    # システムプロンプト（指示文）を先頭に入れる
-    contents.append(system_instruction)
-    
-    # 過去の会話履歴をテキストとしてまとめる
     history_text = ""
     for msg in chat_history[-6:]:
         history_text += f"{msg['role']}: {msg['content']}\n"
     if history_text:
         contents.append(f"【会話履歴】\n{history_text}")
     
-    # 今回のユーザー入力
     if user_text:
         contents.append(f"user: {user_text}")
     if image:
         contents.append(image)
 
-    # API呼び出し
+    # API呼び出し（system_instruction は config に渡す）
     response = client.models.generate_content(
         model="gemini-2.0-flash",
         contents=contents,
         config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
             response_mime_type="application/json",
         )
     )
