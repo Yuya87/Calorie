@@ -11,26 +11,16 @@ from gemini_helper import analyze_meal_or_chat
 st.set_page_config(page_title="AIボディメイク＆体組成", layout="wide")
 st.title("🏃 AIダイエット＆体組成・運動トラッカー")
 
-# --- Firestore初期化（どんな形式のSecretsにも対応） ---
+# --- Firestore初期化 ---
 @st.cache_resource
 def get_db():
-    raw_key = st.secrets["gcp_service_account"]
+    # Secretsから直接辞書として取得
+    sec = st.secrets["gcp_service_account"]
+    key_dict = dict(sec)
     
-    # 既に辞書型(dict / AttrDict)になっている場合
-    if isinstance(raw_key, dict) or hasattr(raw_key, "items"):
-        key_dict = dict(raw_key)
-    # 文字列の場合
-    elif isinstance(raw_key, str):
-        # 余計な前後空白や改行を除去
-        cleaned_key = raw_key.strip()
-        try:
-            key_dict = json.loads(cleaned_key)
-        except Exception as e:
-            # 万が一JSON直接パースに失敗した場合、private_keyのエスケープ文字などを整形して再試行
-            cleaned_key = cleaned_key.replace('\n', '\\n')
-            key_dict = json.loads(cleaned_key)
-    else:
-        raise ValueError("Secretsの 'gcp_service_account' の形式が正しくありません。")
+    # private_key 内の \n (改行文字) が文字列として扱われている場合の補正
+    if "private_key" in key_dict:
+        key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 
     creds = service_account.Credentials.from_service_account_info(key_dict)
     return firestore.Client(credentials=creds, project=key_dict["project_id"])
