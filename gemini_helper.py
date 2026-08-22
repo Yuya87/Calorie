@@ -6,10 +6,11 @@ from google import genai
 from google.genai import types
 
 def get_client():
+    # secrets または os.environ から取得し、余計な空白を除去
     api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY が設定されていません。StreamlitのSecretsを確認してください。")
-    return genai.Client(api_key=api_key)
+    return genai.Client(api_key=api_key.strip())
 
 def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     client = get_client()
@@ -44,7 +45,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
 
     contents = []
     
-    # 会話履歴とユーザーメッセージをテキスト化
+    # 会話履歴をテキスト化
     history_text = ""
     for msg in chat_history[-6:]:
         history_text += f"{msg['role']}: {msg['content']}\n"
@@ -58,35 +59,43 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     if prompt:
         contents.append(prompt)
         
-    # 画像データを新SDKの型(types.Part)に安全に変換
+    # 画像の変換処理
     if image is not None:
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format=image.format or 'JPEG')
-        img_bytes = img_byte_arr.getvalue()
-        
-        contents.append(
-            types.Part.from_bytes(
-                data=img_bytes,
-                mime_type=f"image/{(image.format or 'jpeg').lower()}"
+        try:
+            img_byte_arr = io.BytesIO()
+            # フォーマットが不明な場合はPNGで保存
+            img_format = image.format if image.format else 'PNG'
+            image.save(img_byte_arr, format=img_format)
+            img_bytes = img_byte_arr.getvalue()
+            
+            contents.append(
+                types.Part.from_bytes(
+                    data=img_bytes,
+                    mime_type=f"image/{img_format.lower()}"
+                )
             )
-        )
+        except Exception as e:
+            st.warning(f"画像の処理中にエラーが発生しました: {e}")
 
     if not contents:
         contents.append("こんにちは")
 
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            response_mime_type="application/json",
-        )
-    )
-
+    # API呼び出し
     try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+            )
+        )
         return json.loads(response.text)
-    except Exception:
+        
+    except Exception as e:
+        # 詳細なエラーメッセージを表示して原因特定を容易にする
+        st.error(f"Gemini API呼び出しエラー: {e}")
         return {
             "action_type": "GENERAL_CHAT",
-            "assistant_response": response.text or "解析結果の読み込みに失敗しました。"
+            "assistant_response": "申し訳ありません。エラーが発生したためレスポンスを取得できませんでした。"
         }
