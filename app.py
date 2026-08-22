@@ -104,11 +104,11 @@ with tab1:
                     db.collection("meals").add({
                         "date": today_str,
                         "food_name": m.get('food_name', '食事'),
-                        "calories": m.get('calories', 0),
-                        "protein": m.get('protein', 0),
-                        "fat": m.get('fat', 0),
-                        "carbs": m.get('carbs', 0),
-                        "alcohol_g": m.get('alcohol_g', 0),
+                        "calories": float(m.get('calories', 0)),
+                        "protein": float(m.get('protein', 0)),
+                        "fat": float(m.get('fat', 0)),
+                        "carbs": float(m.get('carbs', 0)),
+                        "alcohol_g": float(m.get('alcohol_g', 0)),
                         "created_at": firestore.SERVER_TIMESTAMP
                     })
                     alc_info = f" (純アルコール: {m.get('alcohol_g', 0)}g)" if m.get('alcohol_g', 0) > 0 else ""
@@ -119,8 +119,8 @@ with tab1:
                     db.collection("exercises").add({
                         "date": today_str,
                         "exercise_name": e.get('exercise_name', '運動'),
-                        "duration_min": e.get('duration_min', 0),
-                        "burned_calories": e.get('burned_calories', 0),
+                        "duration_min": float(e.get('duration_min', 0)),
+                        "burned_calories": float(e.get('burned_calories', 0)),
                         "created_at": firestore.SERVER_TIMESTAMP
                     })
                     response_text += f"\n\n🏋️ **運動記録完了**: {e.get('exercise_name')} {e.get('duration_min')}分 ({e.get('burned_calories')}kcal消費)"
@@ -145,6 +145,12 @@ with tab2:
     
     if meal_list:
         df_m = pd.DataFrame(meal_list)
+        
+        # 数値型へ変換
+        for col in ['calories', 'protein', 'fat', 'carbs', 'alcohol_g']:
+            if col in df_m.columns:
+                df_m[col] = pd.to_numeric(df_m[col], errors='coerce').fillna(0)
+
         df_meals = df_m.groupby('date').agg({
             'calories': 'sum', 'protein': 'sum', 'fat': 'sum', 'carbs': 'sum', 'alcohol_g': 'sum'
         }).reset_index().sort_values('date')
@@ -178,6 +184,12 @@ with tab3:
         df_bal = pd.merge(df_in, df_ex, on='date', how='outer').fillna(0)
         df_bal = pd.merge(df_bal, df_bmr, on='date', how='left') if not df_bmr.empty else df_bal
         df_bal['bmr'] = df_bal['bmr'].fillna(latest_bmr) if 'bmr' in df_bal.columns else latest_bmr
+        
+        # グラフ描画用にすべての数値カラムをfloat型へ確実に変換
+        for col in ['calories', 'burned_calories', 'bmr']:
+            if col in df_bal.columns:
+                df_bal[col] = pd.to_numeric(df_bal[col], errors='coerce').fillna(0)
+
         df_bal['total_burn'] = df_bal['bmr'] + df_bal['burned_calories']
         df_bal['net'] = df_bal['calories'] - df_bal['total_burn']
         df_bal = df_bal.sort_values('date')
@@ -235,4 +247,7 @@ with tab4:
     b_docs = [d.to_dict() for d in db.collection("body_composition").get()]
     if b_docs:
         df_body = pd.DataFrame(b_docs).sort_values('date')
+        for col in ['weight', 'muscle_mass']:
+            if col in df_body.columns:
+                df_body[col] = pd.to_numeric(df_body[col], errors='coerce')
         st.plotly_chart(px.line(df_body, x='date', y=['weight', 'muscle_mass'], title="体重・筋肉量の推移 (kg)", markers=True), use_container_width=True)
