@@ -49,14 +49,11 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     if image:
         contents.append(image)
 
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            response_mime_type="application/json",
-            temperature=0.2
-        )
+    # gemini-2.0-flash を使用する場合
+response = client.models.generate_content(
+    model="gemini-2.0-flash",
+    contents=contents
+)
     )
 
     try:
