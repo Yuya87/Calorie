@@ -1,5 +1,6 @@
 import os
 import json
+import io
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -41,10 +42,9 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     }
     """
 
-    # 送信用リストの作成
     contents = []
     
-    # 会話履歴をテキストとして結合
+    # 会話履歴とユーザーメッセージをテキスト化
     history_text = ""
     for msg in chat_history[-6:]:
         history_text += f"{msg['role']}: {msg['content']}\n"
@@ -58,14 +58,22 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     if prompt:
         contents.append(prompt)
         
+    # 画像データを新SDKの型(types.Part)に安全に変換
     if image is not None:
-        contents.append(image)
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format=image.format or 'JPEG')
+        img_bytes = img_byte_arr.getvalue()
+        
+        contents.append(
+            types.Part.from_bytes(
+                data=img_bytes,
+                mime_type=f"image/{(image.format or 'jpeg').lower()}"
+            )
+        )
 
-    # 万が一 contents が空の場合はダミーテキストを追加
     if not contents:
         contents.append("こんにちは")
 
-    # API呼び出し
     response = client.models.generate_content(
         model="gemini-1.5-flash",
         contents=contents,
