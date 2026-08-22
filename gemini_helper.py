@@ -1,13 +1,8 @@
 import os
 import json
+import streamlit as st
 from google import genai
 from google.genai import types
-
-import streamlit as st
-
-# Streamlit Secrets から API キーを読み込む
-api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key)
 
 def get_client():
     api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -36,7 +31,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
        - action_type: "GENERAL_CHAT"
 
     【出力JSONフォーマット】
-    必ず以下のJSON構造のみを出力してください（Markdownのコードブロックは不要）。
+    必ず以下のJSON構造のみを出力してください。
     {
       "action_type": "MEAL_LOG" | "EXERCISE_LOG" | "UPDATE_GOAL" | "GENERAL_CHAT",
       "assistant_response": "ユーザーへのアドバイスや返答メッセージ",
@@ -46,26 +41,44 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None):
     }
     """
 
-    # contents には会話履歴やユーザー入力のみを入れる（system_instructionは含めない）
+    # 送信用リストの作成
     contents = []
     
+    # 会話履歴をテキストとして結合
     history_text = ""
     for msg in chat_history[-6:]:
         history_text += f"{msg['role']}: {msg['content']}\n"
-    if history_text:
-        contents.append(f"【会話履歴】\n{history_text}")
     
+    prompt = ""
+    if history_text:
+        prompt += f"【会話履歴】\n{history_text}\n"
     if user_text:
-        contents.append(f"user: {user_text}")
-    if image:
+        prompt += f"【最新のユーザー入力】\n{user_text}"
+        
+    if prompt:
+        contents.append(prompt)
+        
+    if image is not None:
         contents.append(image)
 
-    # API呼び出し（system_instruction は config に渡す）
+    # 万が一 contents が空の場合はダミーテキストを追加
+    if not contents:
+        contents.append("こんにちは")
+
+    # API呼び出し
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-1.5-flash",
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
             response_mime_type="application/json",
         )
     )
+
+    try:
+        return json.loads(response.text)
+    except Exception:
+        return {
+            "action_type": "GENERAL_CHAT",
+            "assistant_response": response.text or "解析結果の読み込みに失敗しました。"
+        }
