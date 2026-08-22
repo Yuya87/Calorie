@@ -12,12 +12,14 @@ st.set_page_config(page_title="AIボディメイク＆体組成", layout="wide")
 st.title("🏃 AIダイエット＆体組成・運動トラッカー")
 
 # Firestore初期化
+# app.py の get_db 関数を修正
 @st.cache_resource
 def get_db():
     raw_key = st.secrets["gcp_service_account"]
     if isinstance(raw_key, str):
         key_dict = json.loads(raw_key)
     else:
+        # Streamlitが辞書型(AttrDict)として自動パースした場合の対応
         key_dict = dict(raw_key)
     creds = service_account.Credentials.from_service_account_info(key_dict)
     return firestore.Client(credentials=creds, project=key_dict["project_id"])
