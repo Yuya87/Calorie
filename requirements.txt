@@ -3,4 +3,4 @@ google-genai
 pandas
 plotly
 pillow
-
+google-cloud-firestore
