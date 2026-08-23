@@ -23,7 +23,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     思考プロセスや説明テキストを含めず、指定された純粋なJSON構造のみを迅速に出力してください。
 
     【日付判定ルール】
-    - ユーザーが「昨日」「おとtoi」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
+    - ユーザーが「昨日」「おととい」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
     - 特に日付の指定がない場合や「今日」「さっき」等の場合は、本日の日付 ({today_str}) を target_date に設定してください。
 
     【アクション判定ルール】
@@ -105,7 +105,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     if not contents:
         contents.append("こんにちは")
 
-    # API呼び出し（gemini-3.6-flash + 思考制御で高速化）
+    # API呼び出し
     try:
         response = client.models.generate_content(
             model="gemini-3.6-flash",
@@ -121,8 +121,22 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
         return json.loads(response.text)
 
     except Exception as e:
-        st.error(f"Gemini API呼び出しエラー: {e}")
+        err_msg = str(e)
+        # 429 RESOURCE_EXHAUSTED (利用枠上限超過) のハンドリング
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+            user_warning = (
+                "⚠️ **Gemini APIの無料利用枠（1日20回制限）に達しました。**\n\n"
+                "しばらく時間をおいてから再度お試しいただくか、継続して制限なく利用されたい場合は "
+                "Google AI Studio（https://aistudio.google.com/）にて従量課金（Pay-as-you-go）のセットアップをご検討ください。"
+            )
+            return {
+                "action_type": "GENERAL_CHAT",
+                "assistant_response": user_warning
+            }
+
+        # その他のエラーハンドリング
+        st.error(f"Gemini API呼び出しエラー: {err_msg}")
         return {
             "action_type": "GENERAL_CHAT",
-            "assistant_response": "申し訳ありません。エラーが発生したためレスポンスを取得できませんでした。"
+            "assistant_response": "申し訳ありません。一時的なエラーが発生したためレスポンスを取得できませんでした。"
         }
