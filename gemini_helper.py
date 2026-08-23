@@ -109,34 +109,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     if not contents:
         contents.append("こんにちは")
 
-    # API呼び出し
+    # API呼び出し（thinking_budget=1 を指定して思考レイテンシを極限まで低減）
     try:
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-            )
-        )
-        return json.loads(response.text)
-
-    except Exception as e:
-        err_msg = str(e)
-        # 429 RESOURCE_EXHAUSTED (利用枠上限超過) のハンドリング
-        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-            user_warning = (
-                "⚠️ **Gemini APIの利用枠上限に達しました。**\n\n"
-                "しばらく時間をおいてから再度お試しいただくか、Google AI Studioのクレジット残高をご確認ください。"
-            )
-            return {
-                "action_type": "GENERAL_CHAT",
-                "assistant_response": user_warning
-            }
-
-        # その他のエラーハンドリング
-        st.error(f"Gemini API呼び出しエラー: {err_msg}")
-        return {
-            "action_type": "GENERAL_CHAT",
-            "assistant_response": "申し訳ありません。一時的なエラーが発生したためレスポンスを取得できませんでした。"
-        }
+            model="gemini-
