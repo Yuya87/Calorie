@@ -76,7 +76,7 @@ SYSTEM_INSTRUCTION = """
 
 def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=None):
     """
-    Gemini 2.5 Flash を使用してユーザーの入力を解析し、JSON形式で結果を返す関数
+    Gemini 3.6 Flash を使用してユーザーの入力を解析し、JSON形式で結果を返す関数
     """
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -133,10 +133,10 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
     if image:
         prompt_content.append(image)
 
-    # 3. Gemini API 呼び出し (モデル: gemini-2.5-flash)
+    # 3. Gemini API 呼び出し (モデル: gemini-3.6-flash / Config1)
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=prompt_content,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
