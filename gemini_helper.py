@@ -23,7 +23,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     思考プロセスや説明テキストを含めず、指定された純粋なJSON構造のみを迅速に出力してください。
 
     【日付判定ルール】
-    - ユーザーが「昨日」「おととい」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
+    - ユーザーが「昨日」「おとtoi」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
     - 特に日付の指定がない場合や「今日」「さっき」等の場合は、本日の日付 ({today_str}) を target_date に設定してください。
 
     【アクション判定ルール】
@@ -105,14 +105,17 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     if not contents:
         contents.append("こんにちは")
 
-    # API呼び出し（爆速＆標準モデル: gemini-2.5-flash）
+    # API呼び出し（gemini-3.6-flash + 思考制御で高速化）
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=0
+                )
             )
         )
         return json.loads(response.text)
