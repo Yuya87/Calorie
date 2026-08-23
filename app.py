@@ -8,17 +8,15 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 from gemini_helper import analyze_meal_or_chat
 
-st.set_page_config(page_title="AIボディメイク＆体組成", layout="wide")
-st.title("🏃 AIダイエット＆体組成・運動トラッカー")
+st.set_page_config(page_title="AIボディメイク", layout="wide")
+st.title("🏃 AIボディメイク")
 
 # --- Firestore初期化 ---
 @st.cache_resource
 def get_db():
-    # Secretsから直接辞書として取得
     sec = st.secrets["gcp_service_account"]
     key_dict = dict(sec)
-    
-    # private_key 内の \n (改行文字) が文字列として扱われている場合の補正
+
     if "private_key" in key_dict:
         key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 
@@ -49,9 +47,29 @@ def update_goals(cal, p, f, c):
         "updated_at": firestore.SERVER_TIMESTAMP
     })
 
+def get_recent_logs_for_context():
+    """直近の食事・運動ログをドキュメントID付きで取得してGeminiへの文脈として提供"""
+    meals_docs = db.collection("meals").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
+    ex_docs = db.collection("exercises").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
+
+    logs = []
+    for d in meals_docs:
+        data = d.to_dict()
+        data["doc_id"] = d.id
+        data["collection"] = "meals"
+        logs.append(data)
+
+    for d in ex_docs:
+        data = d.to_dict()
+        data["doc_id"] = d.id
+        data["collection"] = "exercises"
+        logs.append(data)
+
+    return logs
+
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "こんにちは！Firestore連携が完了しました。データは永久保存されます！食事や運動ログを何でも送信してください。"}
+        {"role": "assistant", "content": "こんにちは！AIボディメイクアシスタントです。食事や運動ログの登録、修正、削除など気軽にお申し付けください！"}
     ]
 
 current_goals = get_current_goals()
@@ -76,7 +94,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["💬 AI対話・記録", "📊 栄養・ア�
 
 # --- TAB 1: AI対話 ---
 with tab1:
-    st.header("AIアシスタントと会話して記録")
+    st.header("AIアシスタントと会話して記録・修正")
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
@@ -84,7 +102,7 @@ with tab1:
     uploaded_img = st.file_uploader("写真を送信", type=["jpg", "jpeg", "png"], key="meal_photo")
     image_obj = Image.open(uploaded_img) if uploaded_img else None
 
-    user_input = st.chat_input("例: ジムで傾斜をつけて30分歩いた / ハイボール3杯と焼き鳥")
+    user_input = st.chat_input("例: 昨日の夜にラーメンを食べた / さっきのハイボールの記録を削除して")
 
     if user_input or (uploaded_img and st.button("写真を送信")):
         input_text = user_input if user_input else "写真を送信しました。"
@@ -94,15 +112,23 @@ with tab1:
 
         with st.chat_message("assistant"):
             with st.spinner("思考・解析中..."):
-                res = analyze_meal_or_chat(st.session_state.messages, user_text=input_text, image=image_obj)
+                recent_logs = get_recent_logs_for_context()
+                res = analyze_meal_or_chat(
+                    st.session_state.messages,
+                    user_text=input_text,
+                    image=image_obj,
+                    existing_logs=recent_logs
+                )
+
                 response_text = res.get("assistant_response", "了解しました！")
                 action_type = res.get("action_type", "GENERAL_CHAT")
-                today_str = pd.Timestamp.now().strftime('%Y-%m-%d')
-                
+                target_date = res.get("target_date") or pd.Timestamp.now().strftime('%Y-%m-%d')
+
+                # 食事ログ追加
                 if action_type == "MEAL_LOG" and res.get("meal_data"):
                     m = res["meal_data"]
                     db.collection("meals").add({
-                        "date": today_str,
+                        "date": target_date,
                         "food_name": m.get('food_name', '食事'),
                         "calories": float(m.get('calories', 0)),
                         "protein": float(m.get('protein', 0)),
@@ -112,19 +138,48 @@ with tab1:
                         "created_at": firestore.SERVER_TIMESTAMP
                     })
                     alc_info = f" (純アルコール: {m.get('alcohol_g', 0)}g)" if m.get('alcohol_g', 0) > 0 else ""
-                    response_text += f"\n\n✅ **食事記録完了**: {m.get('food_name')} ({m.get('calories')}kcal / P:{m.get('protein')}g F:{m.get('fat')}g C:{m.get('carbs')}g){alc_info}"
-                
+                    response_text += f"\n\n✅ **食事記録完了 [{target_date}]**: {m.get('food_name')} ({m.get('calories')}kcal / P:{m.get('protein')}g F:{m.get('fat')}g C:{m.get('carbs')}g){alc_info}"
+
+                # 運動ログ追加
                 elif action_type == "EXERCISE_LOG" and res.get("exercise_data"):
                     e = res["exercise_data"]
                     db.collection("exercises").add({
-                        "date": today_str,
+                        "date": target_date,
                         "exercise_name": e.get('exercise_name', '運動'),
                         "duration_min": float(e.get('duration_min', 0)),
                         "burned_calories": float(e.get('burned_calories', 0)),
                         "created_at": firestore.SERVER_TIMESTAMP
                     })
-                    response_text += f"\n\n🏋️ **運動記録完了**: {e.get('exercise_name')} {e.get('duration_min')}分 ({e.get('burned_calories')}kcal消費)"
+                    response_text += f"\n\n🏋️ **運動記録完了 [{target_date}]**: {e.get('exercise_name')} {e.get('duration_min')}分 ({e.get('burned_calories')}kcal消費)"
 
+                # ログの更新 (パターンB)
+                elif action_type == "UPDATE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
+                    coll = res["target_collection"]
+                    doc_id = res["target_doc_id"]
+                    doc_ref = db.collection(coll).document(doc_id)
+
+                    update_fields = {}
+                    if coll == "meals" and res.get("meal_data"):
+                        m = res["meal_data"]
+                        for k in ['food_name', 'calories', 'protein', 'fat', 'carbs', 'alcohol_g']:
+                            if k in m: update_fields[k] = m[k]
+                    elif coll == "exercises" and res.get("exercise_data"):
+                        e = res["exercise_data"]
+                        for k in ['exercise_name', 'duration_min', 'burned_calories']:
+                            if k in e: update_fields[k] = e[k]
+
+                    if update_fields:
+                        doc_ref.update(update_fields)
+                        response_text += f"\n\n✏️ **ログ修正完了** (ID: {doc_id})"
+
+                # ログの削除 (パターンB)
+                elif action_type == "DELETE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
+                    coll = res["target_collection"]
+                    doc_id = res["target_doc_id"]
+                    db.collection(coll).document(doc_id).delete()
+                    response_text += f"\n\n🗑️ **ログ削除完了** (ID: {doc_id})"
+
+                # 目標設定の更新
                 elif action_type == "UPDATE_GOAL" and res.get("goal_data"):
                     g = res["goal_data"]
                     update_goals(g.get("target_cal", current_goals['target_cal']),
@@ -142,11 +197,10 @@ with tab2:
     st.header("日別PFC ＆ アルコール摂取推移")
     docs = db.collection("meals").get()
     meal_list = [d.to_dict() for d in docs]
-    
+
     if meal_list:
         df_m = pd.DataFrame(meal_list)
-        
-        # 数値型へ変換
+
         for col in ['calories', 'protein', 'fat', 'carbs', 'alcohol_g']:
             if col in df_m.columns:
                 df_m[col] = pd.to_numeric(df_m[col], errors='coerce').fillna(0)
@@ -184,8 +238,7 @@ with tab3:
         df_bal = pd.merge(df_in, df_ex, on='date', how='outer').fillna(0)
         df_bal = pd.merge(df_bal, df_bmr, on='date', how='left') if not df_bmr.empty else df_bal
         df_bal['bmr'] = df_bal['bmr'].fillna(latest_bmr) if 'bmr' in df_bal.columns else latest_bmr
-        
-        # グラフ描画用にすべての数値カラムをfloat型へ確実に変換
+
         for col in ['calories', 'burned_calories', 'bmr']:
             if col in df_bal.columns:
                 df_bal[col] = pd.to_numeric(df_bal[col], errors='coerce').fillna(0)
@@ -209,7 +262,7 @@ with tab3:
 with tab4:
     st.header("⚖️ タニタ体組成計 CSVアップロード")
     tanita_file = st.file_uploader("タニタのCSVファイルをアップロード", type=["csv"])
-    
+
     if tanita_file:
         try:
             content = tanita_file.read()
@@ -217,7 +270,7 @@ with tab4:
                 df_raw = pd.read_csv(io.BytesIO(content), encoding="shift_jis")
             except Exception:
                 df_raw = pd.read_csv(io.BytesIO(content), encoding="utf-8")
-            
+
             col_map = {}
             for c in df_raw.columns:
                 c_str = str(c).lower()
