@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import datetime
 import pandas as pd
 from PIL import Image
@@ -11,7 +12,13 @@ from google.genai import types
 # ------------------------------------------------------------------------------
 SYSTEM_INSTRUCTION = """
 あなたはAIボディメイク＆栄養管理アシスタントです。
-入力テキストや画像から意図（食事記録、運動記録、ログ更新/削除、目標変更、雑談など）を判定し、適切なアクションとJSONレスポンスを生成してください。
+入力テキストや画像から意図（食事記録、運動記録、ログ更新/削除、目標変更、雑談など）を判定し、適切なアクションとValidなJSONレスポンスを生成してください。
+
+【重要：JSON出力ルール】
+- 必ずJSONフォーマットのみを出力してください。
+- Markdownのコードブロック（```json）や解説文章は一切含めないでください。
+- 文字列フィールド内でダブルクォーテーションを使う場合は必ずエスケープ (\\") してください。
+- 各文字列値の中で意図しない改行文字（CR/LF）を入れないでください。
 
 【前提ルール・レシピ仕様の最優先適用】
 「【ユーザー定義の前提ルール・レシピ仕様】」が含まれる場合は、通常の数値よりそのルールを最優先して計算してください（例: 無水カレー=ノンオイル・胸肉仕様、ゆで卵=白身のみ等）。
@@ -19,14 +26,11 @@ SYSTEM_INSTRUCTION = """
 【複数データ対応】
 1回の入力に複数の記録（朝・昼・夕食、複数のアルコール・運動など）が含まれる場合は、漏れなくすべて `items` 配列内にまとめて抽出してください。
 
-【出力フォーマット】
-必ず以下のJSON形式でのみ出力してください。解説文やMarkdownタグ（```json 等）は禁止です。出力はインデントを極力詰めたコンパクトなJSON形式としてください。
-
+【出力JSONフォーマット】
 {
   "action_type": "MEAL_LOG" | "EXERCISE_LOG" | "UPDATE_LOG" | "DELETE_LOG" | "UPDATE_GOAL" | "GENERAL_CHAT",
-  "target_date": "YYYY-MM-DD",  // 日付指定（「8/19」「昨日の夜」等）があれば正確な日付。無ければnull
+  "target_date": "YYYY-MM-DD",
   "assistant_response": "ユーザーへの返答メッセージ（登録内容の要約等）",
-  
   "meal_data": {
     "items": [
       {
@@ -39,7 +43,6 @@ SYSTEM_INSTRUCTION = """
       }
     ]
   },
-  
   "exercise_data": {
     "items": [
       {
@@ -49,23 +52,16 @@ SYSTEM_INSTRUCTION = """
       }
     ]
   },
-  
-  "target_doc_id": "FirestoreドキュメントID",
-  "target_collection": "meals" | "exercises",
-  
-  "goal_data": {
-    "target_cal": 0.0,
-    "target_p": 0.0,
-    "target_f": 0.0,
-    "target_c": 0.0
-  }
+  "target_doc_id": null,
+  "target_collection": null,
+  "goal_data": null
 }
 
 【判定ルール】
 1. 日付: 指定があれば YYYY-MM-DD を算出して `target_date` に設定（例: 本日および入力文脈から「8/19」→正確な西暦日付）。無ければ null。
 2. 明示的数値: ユーザーが「約34kcal」「P 7.2g」等と記載している場合はその数値を優先。
 3. 削除・修正: 「参照可能な直近の登録ログ一覧」から対象の `doc_id` と `collection` を特定。
-4. アルコール: ビールやハイボール等の純アルコール量(g) = 度数% × 量ml × 0.8 / 100 を算出して `alcohol_g` に設定（例: ビール350ml 5% ≒ 約14g、ハイボール1杯 ≒ 約10〜13g）。
+4. アルコール: ビールやハイボール等の純アルコール量(g) = 度数% × 量ml × 0.8 / 100 を算出して `alcohol_g` に設定。
 """
 
 def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=None):
@@ -135,20 +131,28 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 response_mime_type="application/json",
-                temperature=0.2,
-                max_output_tokens=2000  # 長文の一括出力（朝・昼・晩・お酒など複数品目）に備えて上限を拡張
+                temperature=0.1,
+                max_output_tokens=4000  # 大量一括入力時でもトークン切れを防ぐ
             )
         )
 
-        res_json = json.loads(response.text)
+        raw_text = response.text.strip()
+        
+        # 不要なMarkdownコードブロックの除去クレンジング
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+            raw_text = re.sub(r"\s*```$", "", raw_text)
+
+        # JSONパース
+        res_json = json.loads(raw_text, strict=False)
 
         # items 構造の補正処理
         if res_json.get("action_type") == "MEAL_LOG" and "meal_data" in res_json:
-            if "items" not in res_json["meal_data"]:
+            if isinstance(res_json["meal_data"], dict) and "items" not in res_json["meal_data"]:
                 res_json["meal_data"] = {"items": [res_json["meal_data"]]}
 
         if res_json.get("action_type") == "EXERCISE_LOG" and "exercise_data" in res_json:
-            if "items" not in res_json["exercise_data"]:
+            if isinstance(res_json["exercise_data"], dict) and "items" not in res_json["exercise_data"]:
                 res_json["exercise_data"] = {"items": [res_json["exercise_data"]]}
 
         return res_json
