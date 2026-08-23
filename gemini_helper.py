@@ -8,7 +8,6 @@ from google.genai import types
 
 # ------------------------------------------------------------------------------
 # システムプロンプト（Geminiの役割・レスポンスフォーマット・判定ルール定義）
-# トークン節約のため冗長表現を排除し最適化
 # ------------------------------------------------------------------------------
 SYSTEM_INSTRUCTION = """
 あなたはAIボディメイク＆栄養管理アシスタントです。
@@ -18,14 +17,14 @@ SYSTEM_INSTRUCTION = """
 「【ユーザー定義の前提ルール・レシピ仕様】」が含まれる場合は、通常の数値よりそのルールを最優先して計算してください（例: 無水カレー=ノンオイル・胸肉仕様、ゆで卵=白身のみ等）。
 
 【複数データ対応】
-1回の入力に複数の記録が含まれる場合は、漏れなく `items` 配列内にまとめて抽出してください。
+1回の入力に複数の記録（朝・昼・夕食、複数のアルコール・運動など）が含まれる場合は、漏れなくすべて `items` 配列内にまとめて抽出してください。
 
 【出力フォーマット】
-必ず以下のJSON形式でのみ出力してください。解説文やMarkdownタグ（```json 等）は禁止です。
+必ず以下のJSON形式でのみ出力してください。解説文やMarkdownタグ（```json 等）は禁止です。出力はインデントを極力詰めたコンパクトなJSON形式としてください。
 
 {
   "action_type": "MEAL_LOG" | "EXERCISE_LOG" | "UPDATE_LOG" | "DELETE_LOG" | "UPDATE_GOAL" | "GENERAL_CHAT",
-  "target_date": "YYYY-MM-DD",  // 日付指定（「8/20」「昨日の夜」等）があれば正確な日付。無ければnull
+  "target_date": "YYYY-MM-DD",  // 日付指定（「8/19」「昨日の夜」等）があれば正確な日付。無ければnull
   "assistant_response": "ユーザーへの返答メッセージ（登録内容の要約等）",
   
   "meal_data": {
@@ -63,16 +62,15 @@ SYSTEM_INSTRUCTION = """
 }
 
 【判定ルール】
-1. 日付: 指定があれば YYYY-MM-DD を算出して `target_date` に設定。無ければ null。
-2. 明示的数値: ユーザーが「約320kcal」「P:45g」等と記載している場合はその数値を優先。
+1. 日付: 指定があれば YYYY-MM-DD を算出して `target_date` に設定（例: 本日および入力文脈から「8/19」→正確な西暦日付）。無ければ null。
+2. 明示的数値: ユーザーが「約34kcal」「P 7.2g」等と記載している場合はその数値を優先。
 3. 削除・修正: 「参照可能な直近の登録ログ一覧」から対象の `doc_id` と `collection` を特定。
-4. アルコール: 純アルコール量(g) = 度数% × 量ml × 0.8 / 100 を算出して `alcohol_g` に設定。
+4. アルコール: ビールやハイボール等の純アルコール量(g) = 度数% × 量ml × 0.8 / 100 を算出して `alcohol_g` に設定（例: ビール350ml 5% ≒ 約14g、ハイボール1杯 ≒ 約10〜13g）。
 """
 
 def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=None):
     """
     Gemini 3.6 Flash を使用してユーザーの入力を解析し、JSON形式で結果を返す関数
-    （トークン消費量・応答速度の最適化版）
     """
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -84,13 +82,12 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
 
     client = genai.Client(api_key=api_key)
 
-    # 1. 過去ログおよび前提ルールの文脈抽出（トークン節約のため直近8件に制限）
+    # 1. 過去ログおよび前提ルールの文脈抽出（直近8件）
     context_str = ""
     user_rules_str = ""
 
     if existing_logs:
         logs_summary = []
-        # 直近8件のみ参照してプロンプトサイズを圧縮
         for log in existing_logs[-8:]:
             if "system_user_rules" in log:
                 user_rules_str = log["system_user_rules"]
@@ -130,7 +127,7 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
     if image:
         prompt_content.append(image)
 
-    # 3. Gemini API 呼び出し (モデル: gemini-3.6-flash / トークン最適化 Config1)
+    # 3. Gemini API 呼び出し (モデル: gemini-3.6-flash / Config1)
     try:
         response = client.models.generate_content(
             model='gemini-3.6-flash',
@@ -139,7 +136,7 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
                 system_instruction=SYSTEM_INSTRUCTION,
                 response_mime_type="application/json",
                 temperature=0.2,
-                max_output_tokens=800  # 出力トークン数の上限を設定し無駄な浪費をカット
+                max_output_tokens=2000  # 長文の一括出力（朝・昼・晩・お酒など複数品目）に備えて上限を拡張
             )
         )
 
