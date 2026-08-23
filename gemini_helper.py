@@ -8,75 +8,71 @@ from google.genai import types
 
 # ------------------------------------------------------------------------------
 # システムプロンプト（Geminiの役割・レスポンスフォーマット・判定ルール定義）
+# トークン節約のため冗長表現を排除し最適化
 # ------------------------------------------------------------------------------
 SYSTEM_INSTRUCTION = """
-あなたはAIボディメイク＆栄養管理のアシスタントです。
-ユーザーとの会話テキストや画像から、意図（食事記録、運動記録、ログの更新、削除、目標変更、雑談など）を判定し、適切なアクションとレスポンスを生成してください。
+あなたはAIボディメイク＆栄養管理アシスタントです。
+入力テキストや画像から意図（食事記録、運動記録、ログ更新/削除、目標変更、雑談など）を判定し、適切なアクションとJSONレスポンスを生成してください。
 
-【重要：ユーザー定義の前提ルール・レシピ仕様の優先適用】
-入力データ内に「【ユーザー定義の前提ルール・レシピ仕様】」が含まれている場合は、通常の一般的栄養数値よりも**そのルールを最優先して**栄養計算を行ってください。
-（例：「無水カレー」→ ノンオイル・ささみ/胸肉使用・スパイス仕込みのヘルシー仕様として計算）
-（例：「ゆで卵」→ 黄身を食べず白身のみ食べる指定がある場合は、白身分の栄養素のみで計算）
+【前提ルール・レシピ仕様の最優先適用】
+「【ユーザー定義の前提ルール・レシピ仕様】」が含まれる場合は、通常の数値よりそのルールを最優先して計算してください（例: 無水カレー=ノンオイル・胸肉仕様、ゆで卵=白身のみ等）。
 
-【重要：複数データの入力対応】
-朝食・昼食・夕食や複数の運動など、一度の入力に複数の記録が含まれている場合は、それらを漏れなく `items` 配列の中にまとめて抽出してください。
+【複数データ対応】
+1回の入力に複数の記録が含まれる場合は、漏れなく `items` 配列内にまとめて抽出してください。
 
-【返釈レスポンスのフォーマット】
-必ず以下のJSON形式でのみレスポンスを出力してください。余計な解説文やMarkdownタグ（```json ... ```等）は一切含めないでください。
+【出力フォーマット】
+必ず以下のJSON形式でのみ出力してください。解説文やMarkdownタグ（```json 等）は禁止です。
 
 {
   "action_type": "MEAL_LOG" | "EXERCISE_LOG" | "UPDATE_LOG" | "DELETE_LOG" | "UPDATE_GOAL" | "GENERAL_CHAT",
-  "target_date": "YYYY-MM-DD",  // ユーザーが日付を指定した場合（「8/20の情報です」「昨日の夜」など）は正確な日付。指定がなければnull
-  "assistant_response": "ユーザーへの親切で前向きな返答メッセージ（一括登録した内容の要約など）",
+  "target_date": "YYYY-MM-DD",  // 日付指定（「8/20」「昨日の夜」等）があれば正確な日付。無ければnull
+  "assistant_response": "ユーザーへの返答メッセージ（登録内容の要約等）",
   
-  // MEAL_LOG（食事追加）の場合：複数ある場合は items に並べる
   "meal_data": {
     "items": [
       {
-        "food_name": "料理・食材名（例: 朝食 プロテイン・ボイル鶏胸肉等）",
-        "calories": 320.0,
-        "protein": 45.0,
-        "fat": 5.0,
-        "carbs": 12.0,
+        "food_name": "料理・食材名",
+        "calories": 0.0,
+        "protein": 0.0,
+        "fat": 0.0,
+        "carbs": 0.0,
         "alcohol_g": 0.0
       }
     ]
   },
   
-  // EXERCISE_LOG（運動追加）の場合：複数ある場合は items に並べる
   "exercise_data": {
     "items": [
       {
-        "exercise_name": "運動名（例: 傾斜ウォーキング）",
-        "duration_min": 60.0,
-        "burned_calories": 250.0
+        "exercise_name": "運動名",
+        "duration_min": 0.0,
+        "burned_calories": 0.0
       }
     ]
   },
   
-  // UPDATE_LOG または DELETE_LOG の場合のみ設定（過去ログ文脈から合致するdoc_idを特定）
-  "target_doc_id": "FirestoreのドキュメントID文字列",
+  "target_doc_id": "FirestoreドキュメントID",
   "target_collection": "meals" | "exercises",
   
-  // UPDATE_GOAL（目標変更）の場合のみ設定
   "goal_data": {
-    "target_cal": 2000.0,
-    "target_p": 120.0,
-    "target_f": 50.0,
-    "target_c": 200.0
+    "target_cal": 0.0,
+    "target_p": 0.0,
+    "target_f": 0.0,
+    "target_c": 0.0
   }
 }
 
-【判定・挙動ルール】
-1. 日付指定の解釈: 「8/20の情報です」「昨日」「一昨日の昼」などの表現から正確な YYYY-MM-DD を算出して `target_date` に設定してください。指定がない場合は null（呼び出し側で本日日付が補完されます）にしてください。
-2. ユーザーがテキスト内に「約320kcal」「P:45g」などの明示的な数値を記載している場合は、その数値を優先してデータ化してください。
-3. 削除・修正の特定: 提供された「過去のログ一覧（doc_id付き）」を参照し、ユーザーが削除・修正したがっている記録の `doc_id` と `collection` を正確に特定してください。
-4. アルコールを含む飲料（ハイボール、ビール等）の場合は `alcohol_g` に純アルコール量(g)（度数% × 量ml × 0.8 / 100）を算出して設定してください（例: ハイボール3杯 ≒ 約40g）。
+【判定ルール】
+1. 日付: 指定があれば YYYY-MM-DD を算出して `target_date` に設定。無ければ null。
+2. 明示的数値: ユーザーが「約320kcal」「P:45g」等と記載している場合はその数値を優先。
+3. 削除・修正: 「参照可能な直近の登録ログ一覧」から対象の `doc_id` と `collection` を特定。
+4. アルコール: 純アルコール量(g) = 度数% × 量ml × 0.8 / 100 を算出して `alcohol_g` に設定。
 """
 
 def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=None):
     """
     Gemini 3.6 Flash を使用してユーザーの入力を解析し、JSON形式で結果を返す関数
+    （トークン消費量・応答速度の最適化版）
     """
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -88,13 +84,14 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
 
     client = genai.Client(api_key=api_key)
 
-    # 1. 過去ログおよび前提ルールの文脈抽出
+    # 1. 過去ログおよび前提ルールの文脈抽出（トークン節約のため直近8件に制限）
     context_str = ""
     user_rules_str = ""
 
     if existing_logs:
         logs_summary = []
-        for log in existing_logs:
+        # 直近8件のみ参照してプロンプトサイズを圧縮
+        for log in existing_logs[-8:]:
             if "system_user_rules" in log:
                 user_rules_str = log["system_user_rules"]
             else:
@@ -104,11 +101,11 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
                 if coll == "meals":
                     name = log.get("food_name", "食事")
                     cal = log.get("calories", 0)
-                    logs_summary.append(f"- [ID: {doc_id} / 種別: meals / 日付: {date}] {name} ({cal}kcal)")
+                    logs_summary.append(f"- [ID:{doc_id}/meals/{date}] {name} ({cal}kcal)")
                 elif coll == "exercises":
                     name = log.get("exercise_name", "運動")
                     burn = log.get("burned_calories", 0)
-                    logs_summary.append(f"- [ID: {doc_id} / 種別: exercises / 日付: {date}] {name} ({burn}kcal消費)")
+                    logs_summary.append(f"- [ID:{doc_id}/exercises/{date}] {name} ({burn}kcal)")
 
         if logs_summary:
             context_str += "\n【参照可能な直近の登録ログ一覧】\n" + "\n".join(logs_summary)
@@ -133,7 +130,7 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
     if image:
         prompt_content.append(image)
 
-    # 3. Gemini API 呼び出し (モデル: gemini-3.6-flash / Config1)
+    # 3. Gemini API 呼び出し (モデル: gemini-3.6-flash / トークン最適化 Config1)
     try:
         response = client.models.generate_content(
             model='gemini-3.6-flash',
@@ -141,7 +138,8 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 response_mime_type="application/json",
-                temperature=0.2
+                temperature=0.2,
+                max_output_tokens=800  # 出力トークン数の上限を設定し無駄な浪費をカット
             )
         )
 
