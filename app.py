@@ -16,13 +16,11 @@ st.set_page_config(page_title="AIボディメイク", layout="wide")
 
 st.markdown("""
     <style>
-    /* メインタイトルのフォントサイズ・余白調整 */
     h1 {
         font-size: 1.6rem !important;
         padding-top: 0.2rem !important;
         padding-bottom: 0.4rem !important;
     }
-    /* サブタイトルのフォントサイズ調整 */
     h2 {
         font-size: 1.3rem !important;
     }
@@ -85,7 +83,6 @@ def update_goals(cal, p, f, c):
 
 # --- 前提条件（ユーザー定義ルール）管理関数 ---
 def get_user_rules():
-    """ユーザーが登録した記録の前提ルール一覧を取得"""
     try:
         docs = db.collection("user_rules").order_by("created_at", direction=firestore.Query.ASCENDING).get()
         rules = []
@@ -98,7 +95,6 @@ def get_user_rules():
         return []
 
 def save_user_rule(rule_title, rule_detail):
-    """前提ルールを新規保存"""
     db.collection("user_rules").add({
         "title": rule_title,
         "detail": rule_detail,
@@ -106,11 +102,9 @@ def save_user_rule(rule_title, rule_detail):
     })
 
 def delete_user_rule(doc_id):
-    """前提ルールを削除"""
     db.collection("user_rules").document(doc_id).delete()
 
 def sanitize_firestore_data(data_dict):
-    """Firestoreの特殊型（DatetimeWithNanoseconds等）を文字列に安全変換"""
     sanitized = {}
     for k, v in data_dict.items():
         if hasattr(v, "isoformat"):
@@ -122,7 +116,6 @@ def sanitize_firestore_data(data_dict):
     return sanitized
 
 def get_recent_logs_for_context():
-    """直近の食事・運動ログをドキュメントID付きで取得してGeminiへの文脈として提供"""
     try:
         meals_docs = db.collection("meals").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
     except Exception:
@@ -171,7 +164,7 @@ with st.sidebar.form("goal_form"):
 st.sidebar.divider()
 st.sidebar.metric("現在の適用基礎代謝 (BMR)", f"{latest_bmr:.0f} kcal", help="タニタの体組成データより自動適用中")
 
-# タブ定義（タブ5: ログルール設定を追加）
+# タブ定義
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "💬 AI対話・記録", 
     "📊 栄養・アルコール管理", 
@@ -201,14 +194,12 @@ with tab1:
         with st.chat_message("assistant"):
             with st.spinner("解析・記録中..."):
                 recent_logs = get_recent_logs_for_context()
-                
-                # ユーザー設定ルールの取得とコンテキスト化
                 user_rules = get_user_rules()
+                
                 rules_text = ""
                 if user_rules:
                     rules_text = "\n【ユーザー定義の前提ルール・レシピ仕様】\n" + "\n".join([f"- {r['title']}: {r['detail']}" for r in user_rules])
 
-                # ログ文脈にルールテキストを合体させてAIへ入力
                 context_logs = list(recent_logs)
                 if rules_text:
                     context_logs.append({"system_user_rules": rules_text})
@@ -224,33 +215,41 @@ with tab1:
                 action_type = res.get("action_type", "GENERAL_CHAT")
                 target_date = res.get("target_date") or pd.Timestamp.now().strftime('%Y-%m-%d')
 
-                # 食事ログ追加
+                # 食事ログ追加（複数一括追加対応）
                 if action_type == "MEAL_LOG" and res.get("meal_data"):
-                    m = res["meal_data"]
-                    db.collection("meals").add({
-                        "date": target_date,
-                        "food_name": m.get('food_name', '食事'),
-                        "calories": float(m.get('calories', 0)),
-                        "protein": float(m.get('protein', 0)),
-                        "fat": float(m.get('fat', 0)),
-                        "carbs": float(m.get('carbs', 0)),
-                        "alcohol_g": float(m.get('alcohol_g', 0)),
-                        "created_at": firestore.SERVER_TIMESTAMP
-                    })
-                    alc_info = f" (純アルコール: {m.get('alcohol_g', 0)}g)" if m.get('alcohol_g', 0) > 0 else ""
-                    response_text += f"\n\n✅ **食事記録完了 [{target_date}]**: {m.get('food_name')} ({m.get('calories')}kcal / P:{m.get('protein')}g F:{m.get('fat')}g C:{m.get('carbs')}g){alc_info}"
+                    items = res["meal_data"].get("items", [res["meal_data"]])
+                    saved_summary = []
+                    for m in items:
+                        db.collection("meals").add({
+                            "date": target_date,
+                            "food_name": m.get('food_name', '食事'),
+                            "calories": float(m.get('calories', 0)),
+                            "protein": float(m.get('protein', 0)),
+                            "fat": float(m.get('fat', 0)),
+                            "carbs": float(m.get('carbs', 0)),
+                            "alcohol_g": float(m.get('alcohol_g', 0)),
+                            "created_at": firestore.SERVER_TIMESTAMP
+                        })
+                        alc_info = f" (Alc:{m.get('alcohol_g', 0)}g)" if m.get('alcohol_g', 0) > 0 else ""
+                        saved_summary.append(f"• {m.get('food_name')} ({m.get('calories')}kcal / P:{m.get('protein')}g F:{m.get('fat')}g C:{m.get('carbs')}g){alc_info}")
+                    
+                    response_text += f"\n\n✅ **食事記録完了 [{target_date}]**:\n" + "\n".join(saved_summary)
 
-                # 運動ログ追加
+                # 運動ログ追加（複数一括追加対応）
                 elif action_type == "EXERCISE_LOG" and res.get("exercise_data"):
-                    e = res["exercise_data"]
-                    db.collection("exercises").add({
-                        "date": target_date,
-                        "exercise_name": e.get('exercise_name', '運動'),
-                        "duration_min": float(e.get('duration_min', 0)),
-                        "burned_calories": float(e.get('burned_calories', 0)),
-                        "created_at": firestore.SERVER_TIMESTAMP
-                    })
-                    response_text += f"\n\n🏋️ **運動記録完了 [{target_date}]**: {e.get('exercise_name')} {e.get('duration_min')}分 ({e.get('burned_calories')}kcal消費)"
+                    items = res["exercise_data"].get("items", [res["exercise_data"]])
+                    saved_summary = []
+                    for e in items:
+                        db.collection("exercises").add({
+                            "date": target_date,
+                            "exercise_name": e.get('exercise_name', '運動'),
+                            "duration_min": float(e.get('duration_min', 0)),
+                            "burned_calories": float(e.get('burned_calories', 0)),
+                            "created_at": firestore.SERVER_TIMESTAMP
+                        })
+                        saved_summary.append(f"• {e.get('exercise_name')} {e.get('duration_min')}分 ({e.get('burned_calories')}kcal消費)")
+                    
+                    response_text += f"\n\n🏋️ **運動記録完了 [{target_date}]**:\n" + "\n".join(saved_summary)
 
                 # ログの更新
                 elif action_type == "UPDATE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
@@ -261,10 +260,12 @@ with tab1:
                     update_fields = {}
                     if coll == "meals" and res.get("meal_data"):
                         m = res["meal_data"]
+                        if "items" in m and len(m["items"]) > 0: m = m["items"][0]
                         for k in ['food_name', 'calories', 'protein', 'fat', 'carbs', 'alcohol_g']:
                             if k in m: update_fields[k] = m[k]
                     elif coll == "exercises" and res.get("exercise_data"):
                         e = res["exercise_data"]
+                        if "items" in e and len(e["items"]) > 0: e = e["items"][0]
                         for k in ['exercise_name', 'duration_min', 'burned_calories']:
                             if k in e: update_fields[k] = e[k]
 
@@ -312,7 +313,6 @@ with tab2:
             'calories': 'sum', 'protein': 'sum', 'fat': 'sum', 'carbs': 'sum', 'alcohol_g': 'sum'
         }).reset_index().sort_values('date')
 
-        # A. 達成状況（コンパクト表示）
         latest = df_meals.iloc[-1]
         st.subheader(f"🎯 本日 ({latest['date']}) の達成状況")
         
@@ -344,7 +344,6 @@ with tab2:
 
         st.markdown("---")
 
-        # B. PFC & アルコール推移 (1つの折れ線グラフで比較)
         st.subheader("📈 PFC ＆ アルコール摂取推移")
 
         df_melted = df_meals.melt(
@@ -389,7 +388,6 @@ with tab2:
 
         st.markdown("---")
 
-        # C. 直近3日分の運動・食事サマリ
         st.subheader("📋 直近3日間の活動サマリ")
 
         today = datetime.date.today()
@@ -518,11 +516,10 @@ with tab5:
     st.header("⚙️ 食事・運動の前提ルール設定")
     st.caption("ここで登録したルールや自家製レシピの仕様は、AI対話時に自動的に考慮されます。")
 
-    # 1. 新規ルール登録フォーム
     with st.expander("➕ 新しい前提ルール・レシピを追加する", expanded=True):
         with st.form("add_rule_form", clear_on_submit=True):
             rule_title = st.text_input("タイトル（例: 自家製無水カレー, ゆで卵）", placeholder="自家製無水カレー")
-            rule_detail = st.text_area("ルールの詳細（例: ノンオイル、ささみ/胸肉使用、ルー不使用スパイス仕込み。1皿あたり推定350kcal, P:35g, F:5g, C:40g）", 
+            rule_detail = st.text_area("ルールの詳細（例: ノンオイル、ささみ/胸肉使用、スパイス仕込み）", 
                                        placeholder="ノンオイルでささみ・胸肉を使用。スパイスから作成。1皿350kcal想定。")
             
             submit_rule = st.form_submit_button("ルールを保存")
@@ -536,7 +533,6 @@ with tab5:
 
     st.markdown("---")
 
-    # 2. 登録済みルール一覧・削除
     st.subheader("📋 登録済みのルール一覧")
     registered_rules = get_user_rules()
 
