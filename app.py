@@ -83,6 +83,32 @@ def update_goals(cal, p, f, c):
         "updated_at": firestore.SERVER_TIMESTAMP
     })
 
+# --- 前提条件（ユーザー定義ルール）管理関数 ---
+def get_user_rules():
+    """ユーザーが登録した記録の前提ルール一覧を取得"""
+    try:
+        docs = db.collection("user_rules").order_by("created_at", direction=firestore.Query.ASCENDING).get()
+        rules = []
+        for d in docs:
+            data = d.to_dict()
+            data["id"] = d.id
+            rules.append(data)
+        return rules
+    except Exception:
+        return []
+
+def save_user_rule(rule_title, rule_detail):
+    """前提ルールを新規保存"""
+    db.collection("user_rules").add({
+        "title": rule_title,
+        "detail": rule_detail,
+        "created_at": firestore.SERVER_TIMESTAMP
+    })
+
+def delete_user_rule(doc_id):
+    """前提ルールを削除"""
+    db.collection("user_rules").document(doc_id).delete()
+
 def sanitize_firestore_data(data_dict):
     """Firestoreの特殊型（DatetimeWithNanoseconds等）を文字列に安全変換"""
     sanitized = {}
@@ -145,7 +171,14 @@ with st.sidebar.form("goal_form"):
 st.sidebar.divider()
 st.sidebar.metric("現在の適用基礎代謝 (BMR)", f"{latest_bmr:.0f} kcal", help="タニタの体組成データより自動適用中")
 
-tab1, tab2, tab3, tab4 = st.tabs(["💬 AI対話・記録", "📊 栄養・アルコール管理", "🔥 カロリー収支 & 運動", "⚖️ 体組成 (タニタ)"])
+# タブ定義（タブ5: ログルール設定を追加）
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "💬 AI対話・記録", 
+    "📊 栄養・アルコール管理", 
+    "🔥 カロリー収支 & 運動", 
+    "⚖️ 体組成 (タニタ)",
+    "⚙️ ログルール設定"
+])
 
 # --- TAB 1: AI対話 ---
 with tab1:
@@ -157,7 +190,7 @@ with tab1:
     uploaded_img = st.file_uploader("写真を送信", type=["jpg", "jpeg", "png"], key="meal_photo")
     image_obj = Image.open(uploaded_img) if uploaded_img else None
 
-    user_input = st.chat_input("例: 昨日の夜にラーメンを食べた / さっきのハイボールの記録を削除して")
+    user_input = st.chat_input("例: 昨日の夜に無水カレーとゆで卵を食べた / さっきの記録を削除して")
 
     if user_input or (uploaded_img and st.button("写真を送信")):
         input_text = user_input if user_input else "写真を送信しました。"
@@ -168,11 +201,23 @@ with tab1:
         with st.chat_message("assistant"):
             with st.spinner("解析・記録中..."):
                 recent_logs = get_recent_logs_for_context()
+                
+                # ユーザー設定ルールの取得とコンテキスト化
+                user_rules = get_user_rules()
+                rules_text = ""
+                if user_rules:
+                    rules_text = "\n【ユーザー定義の前提ルール・レシピ仕様】\n" + "\n".join([f"- {r['title']}: {r['detail']}" for r in user_rules])
+
+                # ログ文脈にルールテキストを合体させてAIへ入力
+                context_logs = list(recent_logs)
+                if rules_text:
+                    context_logs.append({"system_user_rules": rules_text})
+
                 res = analyze_meal_or_chat(
                     st.session_state.messages,
                     user_text=input_text,
                     image=image_obj,
-                    existing_logs=recent_logs
+                    existing_logs=context_logs
                 )
 
                 response_text = res.get("assistant_response", "了解しました！")
@@ -267,9 +312,7 @@ with tab2:
             'calories': 'sum', 'protein': 'sum', 'fat': 'sum', 'carbs': 'sum', 'alcohol_g': 'sum'
         }).reset_index().sort_values('date')
 
-        # ----------------------------------------------------------------------
         # A. 達成状況（コンパクト表示）
-        # ----------------------------------------------------------------------
         latest = df_meals.iloc[-1]
         st.subheader(f"🎯 本日 ({latest['date']}) の達成状況")
         
@@ -301,9 +344,7 @@ with tab2:
 
         st.markdown("---")
 
-        # ----------------------------------------------------------------------
         # B. PFC & アルコール推移 (1つの折れ線グラフで比較)
-        # ----------------------------------------------------------------------
         st.subheader("📈 PFC ＆ アルコール摂取推移")
 
         df_melted = df_meals.melt(
@@ -348,15 +389,12 @@ with tab2:
 
         st.markdown("---")
 
-        # ----------------------------------------------------------------------
         # C. 直近3日分の運動・食事サマリ
-        # ----------------------------------------------------------------------
         st.subheader("📋 直近3日間の活動サマリ")
 
         today = datetime.date.today()
         recent_3_dates = [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)]
 
-        # 全運動データの取得
         ex_docs = db.collection("exercises").get()
         ex_list = [d.to_dict() for d in ex_docs]
         df_ex_all = pd.DataFrame(ex_list) if ex_list else pd.DataFrame()
@@ -367,7 +405,6 @@ with tab2:
                 day_label = "本日" if idx == 0 else ("昨日" if idx == 1 else "一昨日")
                 st.markdown(f"**📅 {target_d} ({day_label})**")
 
-                # 食事ログの抽出
                 day_meals = df_m[df_m['date'] == target_d] if not df_m.empty else pd.DataFrame()
                 with st.expander("🥗 食事内容", expanded=True):
                     if not day_meals.empty:
@@ -380,7 +417,6 @@ with tab2:
                     else:
                         st.caption("記録がありません")
 
-                # 運動ログの抽出
                 day_ex = df_ex_all[df_ex_all['date'] == target_d] if not df_ex_all.empty and 'date' in df_ex_all.columns else pd.DataFrame()
                 with st.expander("🏃 運動内容", expanded=True):
                     if not day_ex.empty:
@@ -476,3 +512,50 @@ with tab4:
             if col in df_body.columns:
                 df_body[col] = pd.to_numeric(df_body[col], errors='coerce')
         st.plotly_chart(px.line(df_body, x='date', y=['weight', 'muscle_mass'], title="体重・筋肉量の推移 (kg)", markers=True), use_container_width=True)
+
+# --- TAB 5: 前提条件・ログルール管理 ---
+with tab5:
+    st.header("⚙️ 食事・運動の前提ルール設定")
+    st.caption("ここで登録したルールや自家製レシピの仕様は、AI対話時に自動的に考慮されます。")
+
+    # 1. 新規ルール登録フォーム
+    with st.expander("➕ 新しい前提ルール・レシピを追加する", expanded=True):
+        with st.form("add_rule_form", clear_on_submit=True):
+            rule_title = st.text_input("タイトル（例: 自家製無水カレー, ゆで卵）", placeholder="自家製無水カレー")
+            rule_detail = st.text_area("ルールの詳細（例: ノンオイル、ささみ/胸肉使用、ルー不使用スパイス仕込み。1皿あたり推定350kcal, P:35g, F:5g, C:40g）", 
+                                       placeholder="ノンオイルでささみ・胸肉を使用。スパイスから作成。1皿350kcal想定。")
+            
+            submit_rule = st.form_submit_button("ルールを保存")
+            if submit_rule:
+                if rule_title and rule_detail:
+                    save_user_rule(rule_title, rule_detail)
+                    st.success(f"ルール「{rule_title}」を保存しました！")
+                    st.rerun()
+                else:
+                    st.warning("タイトルと詳細の両方を入力してください。")
+
+    st.markdown("---")
+
+    # 2. 登録済みルール一覧・削除
+    st.subheader("📋 登録済みのルール一覧")
+    registered_rules = get_user_rules()
+
+    if registered_rules:
+        for r in registered_rules:
+            r_id = r["id"]
+            r_title = r.get("title", "無題")
+            r_detail = r.get("detail", "")
+
+            with st.container():
+                col_info, col_btn = st.columns([5, 1])
+                with col_info:
+                    st.markdown(f"**📌 {r_title}**")
+                    st.write(r_detail)
+                with col_btn:
+                    if st.button("削除", key=f"del_rule_{r_id}"):
+                        delete_user_rule(r_id)
+                        st.success("削除しました！")
+                        st.rerun()
+            st.divider()
+    else:
+        st.info("登録されているルールはありません。")
