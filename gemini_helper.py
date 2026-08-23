@@ -20,7 +20,11 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     あなたは親切で高度なボディメイク・栄養アドバイザーAIです。
     本日の日付は 【 {today_str} 】 です。
     ユーザーからの発言や画像をもとに、以下のルールでJSONレスポンスを生成してください。
-    思考プロセスや説明テキストを含めず、指定された純粋なJSON構造のみを迅速に出力してください。
+
+    【最重要出力ルール】
+    指定された純粋なJSON構造のみを出力してください。
+    JSON構造の外側に、思考プロセス、前置き、後置き、説明テキスト、コードブロック記号（```json 等）を含めることは厳禁です。
+    ユーザーへのメッセージやアドバイスは、必ずJSON内部の assistant_response フィールドの中に格納してください。
 
     【日付判定ルール】
     - ユーザーが「昨日」「おととい」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
@@ -113,9 +117,6 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=0
-                )
             )
         )
         return json.loads(response.text)
@@ -125,9 +126,8 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
         # 429 RESOURCE_EXHAUSTED (利用枠上限超過) のハンドリング
         if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
             user_warning = (
-                "⚠️ **Gemini APIの無料利用枠（1日20回制限）に達しました。**\n\n"
-                "しばらく時間をおいてから再度お試しいただくか、継続して制限なく利用されたい場合は "
-                "Google AI Studio（https://aistudio.google.com/）にて従量課金（Pay-as-you-go）のセットアップをご検討ください。"
+                "⚠️ **Gemini APIの利用枠上限に達しました。**\n\n"
+                "しばらく時間をおいてから再度お試しいただくか、Google AI Studioのクレジット残高をご確認ください。"
             )
             return {
                 "action_type": "GENERAL_CHAT",
