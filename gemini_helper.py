@@ -1,11 +1,49 @@
 import os
 import json
 import io
-import streamlit as st
 import datetime
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 from google import genai
 from google.genai import types
 
+# ------------------------------------------------------------------------------
+# 1. Page Config & CSS (タイトルの文字サイズ調整)
+# ------------------------------------------------------------------------------
+st.set_page_config(page_title="AI Body Make & Tracker", layout="wide")
+
+# タイトルやヘッダーの文字サイズをコンパクトにするCSS
+st.markdown("""
+    <style>
+    /* メインタイトルのフォントサイズ調整 */
+    h1 {
+        font-size: 1.8rem !important;
+        padding-top: 0.5rem !important;
+        padding-bottom: 0.5rem !important;
+    }
+    /* サブタイトルのフォントサイズ調整 */
+    h2 {
+        font-size: 1.4rem !important;
+    }
+    h3 {
+        font-size: 1.1rem !important;
+    }
+    /* コンパクト表示用のカードスタイル */
+    .summary-card {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+        border-left: 4px solid #4CAF50;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------------------
+# 2. Gemini API 連携ロジック (gemini_helper.py)
+# ------------------------------------------------------------------------------
 def get_client():
     api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -27,7 +65,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     ユーザーへのメッセージやアドバイスは、必ずJSON内部の assistant_response フィールドの中に格納してください。
 
     【日付判定ルール】
-    - ユーザーが「昨日」「おとtoi」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
+    - ユーザーが「昨日」「おととい」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
     - 特に日付の指定がない場合や「今日」「さっき」等の場合は、本日の日付 ({today_str}) を target_date に設定してください。
 
     【アクション判定ルール】
@@ -109,7 +147,6 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     if not contents:
         contents.append("こんにちは")
 
-    # API呼び出し（thinking_budget=1 を指定して思考レイテンシを極限まで低減）
     try:
         response = client.models.generate_content(
             model="gemini-3.6-flash",
@@ -126,7 +163,6 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
 
     except Exception as e:
         err_msg = str(e)
-        # 429 RESOURCE_EXHAUSTED (利用枠上限超過) のハンドリング
         if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
             user_warning = (
                 "⚠️ **Gemini APIの利用枠上限に達しました。**\n\n"
@@ -137,9 +173,67 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
                 "assistant_response": user_warning
             }
 
-        # その他のエラーハンドリング
         st.error(f"Gemini API呼び出しエラー: {err_msg}")
         return {
             "action_type": "GENERAL_CHAT",
             "assistant_response": "申し訳ありません。一時的なエラーが発生したためレスポンスを取得できませんでした。"
         }
+
+
+# ------------------------------------------------------------------------------
+# 3. メインUIコンポーネント (栄養・アルコール管理タブ)
+# ------------------------------------------------------------------------------
+st.title("💪 AI ボディメイク & 体組成トラッカー")
+
+tabs = st.tabs(["栄養・アルコール管理", "運動・体組成", "チャットサポート"])
+
+with tabs[0]:
+    # サンプルデータ / Firestoreから取得する構造を想定
+    today = datetime.date.today()
+    dates = [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+
+    # ダミーデータ構成 (実際のアプリではFirestoreから取得)
+    df_daily = pd.DataFrame({
+        "date": dates,
+        "Protein (g)": [120, 135, 110, 140, 125, 130, 105],
+        "Fat (g)": [50, 45, 60, 55, 40, 50, 45],
+        "Carbs (g)": [200, 180, 220, 190, 210, 175, 160],
+        "Alcohol (g)": [0, 15, 0, 30, 0, 0, 20],
+        "Calories (kcal)": [1730, 1665, 1860, 1810, 1700, 1670, 1465]
+    })
+
+    target_goals = {"target_cal": 2000, "target_p": 140, "target_f": 50, "target_c": 200}
+
+    # --------------------------------------------------------------------------
+    # A. 摂取カロリー・PFC達成状況 (コンパクト表示)
+    # --------------------------------------------------------------------------
+    st.subheader("🎯 本日の達成状況")
+    
+    # 今日の数値を取得 (最新日付)
+    today_data = df_daily.iloc[-1]
+
+    col_cal, col_p, col_f, col_c = st.columns(4)
+
+    with col_cal:
+        cal_pct = min(1.0, today_data["Calories (kcal)"] / target_goals["target_cal"])
+        st.metric(label="カロリー", value=f"{int(today_data['Calories (kcal)'])} kcal", delta=f"{int(today_data['Calories (kcal)'] - target_goals['target_cal'])} kcal")
+        st.progress(cal_pct, text=f"目標: {target_goals['target_cal']} kcal")
+
+    with col_p:
+        p_pct = min(1.0, today_data["Protein (g)"] / target_goals["target_p"])
+        st.metric(label="P (タンパク質)", value=f"{int(today_data['Protein (g)'])} g", delta=f"{int(today_data['Protein (g)'] - target_goals['target_p'])} g")
+        st.progress(p_pct, text=f"目標: {target_goals['target_p']}g")
+
+    with col_f:
+        f_pct = min(1.0, today_data["Fat (g)"] / target_goals["target_f"])
+        st.metric(label="F (脂質)", value=f"{int(today_data['Fat (g)'])} g", delta=f"{int(today_data['Fat (g)'] - target_goals['target_f'])} g")
+        st.progress(f_pct, text=f"目標: {target_goals['target_f']}g")
+
+    with col_c:
+        c_pct = min(1.0, today_data["Carbs (g)"] / target_goals["target_c"])
+        st.metric(label="C (炭水化物)", value=f"{int(today_data['Carbs (g)'])} g", delta=f"{int(today_data['Carbs (g)'] - target_goals['target_c'])} g")
+        st.progress(c_pct, text=f"目標: {target_goals['target_c']}g")
+
+    st.markdown("---")
+
+    # --------------------------------------------------------------------------
