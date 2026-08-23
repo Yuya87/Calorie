@@ -4,6 +4,7 @@ import plotly.express as px
 from PIL import Image
 import io
 import json
+from datetime import datetime
 from google.cloud import firestore
 from google.oauth2 import service_account
 from gemini_helper import analyze_meal_or_chat
@@ -27,19 +28,32 @@ def get_db():
 db = get_db()
 
 def get_current_goals():
-    docs = db.collection("user_goals").order_by("updated_at", direction=firestore.Query.DESCENDING).limit(1).get()
-    if docs:
-        return docs[0].to_dict()
-    return {"target_cal": 2000, "target_p": 120, "target_f": 50, "target_c": 200}
+    default_goals = {"target_cal": 2000.0, "target_p": 120.0, "target_f": 50.0, "target_c": 200.0}
+    try:
+        docs = db.collection("user_goals").order_by("updated_at", direction=firestore.Query.DESCENDING).limit(1).get()
+        if docs:
+            data = docs[0].to_dict()
+            return {
+                "target_cal": float(data.get("target_cal", default_goals["target_cal"])),
+                "target_p": float(data.get("target_p", default_goals["target_p"])),
+                "target_f": float(data.get("target_f", default_goals["target_f"])),
+                "target_c": float(data.get("target_c", default_goals["target_c"])),
+            }
+    except Exception as e:
+        return default_goals
+    return default_goals
 
 def get_latest_bmr():
-    docs = db.collection("body_composition").order_by("date", direction=firestore.Query.DESCENDING).limit(1).get()
-    if docs:
-        data = docs[0].to_dict()
-        if data.get("bmr"):
-            return float(data["bmr"])
-        elif data.get("weight"):
-            return round(float(data["weight"]) * 21.5, 0)
+    try:
+        docs = db.collection("body_composition").order_by("date", direction=firestore.Query.DESCENDING).limit(1).get()
+        if docs:
+            data = docs[0].to_dict()
+            if data.get("bmr"):
+                return float(data["bmr"])
+            elif data.get("weight"):
+                return round(float(data["weight"]) * 21.5, 0)
+    except Exception:
+        pass
     return 1500.0
 
 def update_goals(cal, p, f, c):
@@ -48,20 +62,39 @@ def update_goals(cal, p, f, c):
         "updated_at": firestore.SERVER_TIMESTAMP
     })
 
+def sanitize_firestore_data(data_dict):
+    """Firestoreの特殊型（DatetimeWithNanoseconds等）を文字列に安全変換"""
+    sanitized = {}
+    for k, v in data_dict.items():
+        if hasattr(v, "isoformat"):
+            sanitized[k] = v.isoformat()
+        elif hasattr(v, "__class__") and "DatetimeWithNanoseconds" in v.__class__.__name__:
+            sanitized[k] = str(v)
+        else:
+            sanitized[k] = v
+    return sanitized
+
 def get_recent_logs_for_context():
     """直近の食事・運動ログをドキュメントID付きで取得してGeminiへの文脈として提供"""
-    meals_docs = db.collection("meals").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
-    ex_docs = db.collection("exercises").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
+    try:
+        meals_docs = db.collection("meals").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
+    except Exception:
+        meals_docs = []
+
+    try:
+        ex_docs = db.collection("exercises").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
+    except Exception:
+        ex_docs = []
 
     logs = []
     for d in meals_docs:
-        data = d.to_dict()
+        data = sanitize_firestore_data(d.to_dict())
         data["doc_id"] = d.id
         data["collection"] = "meals"
         logs.append(data)
 
     for d in ex_docs:
-        data = d.to_dict()
+        data = sanitize_firestore_data(d.to_dict())
         data["doc_id"] = d.id
         data["collection"] = "exercises"
         logs.append(data)
@@ -153,7 +186,7 @@ with tab1:
                     })
                     response_text += f"\n\n🏋️ **運動記録完了 [{target_date}]**: {e.get('exercise_name')} {e.get('duration_min')}分 ({e.get('burned_calories')}kcal消費)"
 
-                # ログの更新 (パターンB)
+                # ログの更新
                 elif action_type == "UPDATE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
                     coll = res["target_collection"]
                     doc_id = res["target_doc_id"]
@@ -173,7 +206,7 @@ with tab1:
                         doc_ref.update(update_fields)
                         response_text += f"\n\n✏️ **ログ修正完了** (ID: {doc_id})"
 
-                # ログの削除 (パターンB)
+                # ログの削除
                 elif action_type == "DELETE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
                     coll = res["target_collection"]
                     doc_id = res["target_doc_id"]
