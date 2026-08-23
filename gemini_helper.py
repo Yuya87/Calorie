@@ -20,6 +20,7 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     あなたは親切で高度なボディメイク・栄養アドバイザーAIです。
     本日の日付は 【 {today_str} 】 です。
     ユーザーからの発言や画像をもとに、以下のルールでJSONレスポンスを生成してください。
+    思考プロセスや説明テキストを含めず、指定された純粋なJSON構造のみを迅速に出力してください。
 
     【日付判定ルール】
     - ユーザーが「昨日」「おととい」「8月20日」など日付を指定している場合は、その日付を YYYY-MM-DD 形式で target_date に格納してください。
@@ -104,10 +105,10 @@ def analyze_meal_or_chat(chat_history, user_text=None, image=None, existing_logs
     if not contents:
         contents.append("こんにちは")
 
-    # API呼び出し（gemini-3.6-flash）
+    # API呼び出し（爆速＆標準モデル: gemini-2.5-flash）
     try:
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-2.5-flash",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
