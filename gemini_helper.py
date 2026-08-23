@@ -18,29 +18,40 @@ SYSTEM_INSTRUCTION = """
 （例：「無水カレー」→ ノンオイル・ささみ/胸肉使用・スパイス仕込みのヘルシー仕様として計算）
 （例：「ゆで卵」→ 黄身を食べず白身のみ食べる指定がある場合は、白身分の栄養素のみで計算）
 
+【重要：複数データの入力対応】
+朝食・昼食・夕食や複数の運動など、一度の入力に複数の記録が含まれている場合は、それらを漏れなく `items` 配列の中にまとめて抽出してください。
+
 【返釈レスポンスのフォーマット】
 必ず以下のJSON形式でのみレスポンスを出力してください。余計な解説文やMarkdownタグ（```json ... ```等）は一切含めないでください。
 
 {
   "action_type": "MEAL_LOG" | "EXERCISE_LOG" | "UPDATE_LOG" | "DELETE_LOG" | "UPDATE_GOAL" | "GENERAL_CHAT",
-  "target_date": "YYYY-MM-DD",  // ユーザーが日付を指定した場合（「昨日の夜」「8/10」など）はその日付。指定がなければnull
-  "assistant_response": "ユーザーへの親切で前向きな返答メッセージ",
+  "target_date": "YYYY-MM-DD",  // ユーザーが日付を指定した場合（「8/20の情報です」「昨日の夜」など）は正確な日付。指定がなければnull
+  "assistant_response": "ユーザーへの親切で前向きな返答メッセージ（一括登録した内容の要約など）",
   
-  // MEAL_LOG（食事追加）または UPDATE_LOG（食事修正）の場合のみ設定
+  // MEAL_LOG（食事追加）の場合：複数ある場合は items に並べる
   "meal_data": {
-    "food_name": "料理・食材名",
-    "calories": 350.0,
-    "protein": 30.0,
-    "fat": 5.0,
-    "carbs": 40.0,
-    "alcohol_g": 0.0 // アルコールが含まれる場合は純アルコール量(g)を計算して設定
+    "items": [
+      {
+        "food_name": "料理・食材名（例: 朝食 プロテイン・ボイル鶏胸肉等）",
+        "calories": 320.0,
+        "protein": 45.0,
+        "fat": 5.0,
+        "carbs": 12.0,
+        "alcohol_g": 0.0
+      }
+    ]
   },
   
-  // EXERCISE_LOG（運動追加）または UPDATE_LOG（運動修正）の場合のみ設定
+  // EXERCISE_LOG（運動追加）の場合：複数ある場合は items に並べる
   "exercise_data": {
-    "exercise_name": "運動名",
-    "duration_min": 30.0,
-    "burned_calories": 150.0
+    "items": [
+      {
+        "exercise_name": "運動名（例: 傾斜ウォーキング）",
+        "duration_min": 60.0,
+        "burned_calories": 250.0
+      }
+    ]
   },
   
   // UPDATE_LOG または DELETE_LOG の場合のみ設定（過去ログ文脈から合致するdoc_idを特定）
@@ -57,16 +68,16 @@ SYSTEM_INSTRUCTION = """
 }
 
 【判定・挙動ルール】
-1. 日付指定の解釈: 「昨日」「一昨日の昼」「8/15」などの表現から正確な YYYY-MM-DD を算出して `target_date` に設定してください。指定がない場合は null（呼び出し側で本日日付が補完されます）にしてください。
-2. 削除・修正の特定: 提供された「過去のログ一覧（doc_id付き）」を参照し、ユーザーが削除・修正したがっている記録の `doc_id` と `collection` を正確に特定してください。
-3. 栄養素の推定: 前提ルールを考慮した上で、現実的なPFCバランスおよびカロリーを推定してください。アルコールを含む飲料（ビール、ハイボール等）の場合は `alcohol_g` に純アルコール量(g)（度数% × 量ml × 0.8 / 100）を算出して設定してください。
+1. 日付指定の解釈: 「8/20の情報です」「昨日」「一昨日の昼」などの表現から正確な YYYY-MM-DD を算出して `target_date` に設定してください。指定がない場合は null（呼び出し側で本日日付が補完されます）にしてください。
+2. ユーザーがテキスト内に「約320kcal」「P:45g」などの明示的な数値を記載している場合は、その数値を優先してデータ化してください。
+3. 削除・修正の特定: 提供された「過去のログ一覧（doc_id付き）」を参照し、ユーザーが削除・修正したがっている記録の `doc_id` と `collection` を正確に特定してください。
+4. アルコールを含む飲料（ハイボール、ビール等）の場合は `alcohol_g` に純アルコール量(g)（度数% × 量ml × 0.8 / 100）を算出して設定してください（例: ハイボール3杯 ≒ 約40g）。
 """
 
 def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=None):
     """
     Gemini 2.5 Flash を使用してユーザーの入力を解析し、JSON形式で結果を返す関数
     """
-    # Streamlit secrets または環境変数からAPIキーを取得
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         try:
@@ -84,7 +95,6 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
     if existing_logs:
         logs_summary = []
         for log in existing_logs:
-            # 前提ルールテキストの抽出
             if "system_user_rules" in log:
                 user_rules_str = log["system_user_rules"]
             else:
@@ -103,11 +113,10 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
         if logs_summary:
             context_str += "\n【参照可能な直近の登録ログ一覧】\n" + "\n".join(logs_summary)
 
-    # ユーザー定義ルールが存在する場合は文脈の最前列に追加
     if user_rules_str:
         context_str = user_rules_str + "\n" + context_str
 
-    # 2. 会話履歴のプロンプト化
+    # 2. プロンプト生成
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     prompt_content = [
         f"本日の日付: {today_str}\n",
@@ -115,17 +124,16 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
         "\n【これまでの会話の流れ】\n"
     ]
 
-    for msg in messages_history[-6:]:  # 直近の会話数件を文脈として保持
+    for msg in messages_history[-6:]:
         role = "ユーザー" if msg["role"] == "user" else "アシスタント"
         prompt_content.append(f"{role}: {msg['content']}\n")
 
     prompt_content.append(f"ユーザーの最新の入力: {user_text}\n")
 
-    # 画像が添付されている場合は入力に追加
     if image:
         prompt_content.append(image)
 
-    # 3. Gemini API 呼び出し
+    # 3. Gemini API 呼び出し (モデル: gemini-2.5-flash)
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -137,12 +145,20 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
             )
         )
 
-        # JSONレスポンスのパース
         res_json = json.loads(response.text)
+
+        # items 構造の補正処理
+        if res_json.get("action_type") == "MEAL_LOG" and "meal_data" in res_json:
+            if "items" not in res_json["meal_data"]:
+                res_json["meal_data"] = {"items": [res_json["meal_data"]]}
+
+        if res_json.get("action_type") == "EXERCISE_LOG" and "exercise_data" in res_json:
+            if "items" not in res_json["exercise_data"]:
+                res_json["exercise_data"] = {"items": [res_json["exercise_data"]]}
+
         return res_json
 
     except Exception as e:
-        # エラー発生時のフォールバック
         return {
             "action_type": "GENERAL_CHAT",
             "target_date": None,
