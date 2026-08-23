@@ -21,10 +21,8 @@ def get_db():
         key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 
     creds = service_account.Credentials.from_service_account_info(key_dict)
-    
-    # 修正前: return firestore.Client(credentials=creds, project=key_dict["project_id"])
-    # 修正後: database="calorie" を追加して指定のデータベースに接続する
-    return firestore.Client(credentials=creds, project=key_dict["project_id"], database="default")
+    # デフォルトデータベースに接続
+    return firestore.Client(credentials=creds, project=key_dict["project_id"])
     
 db = get_db()
 
