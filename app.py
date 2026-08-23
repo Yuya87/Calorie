@@ -24,7 +24,7 @@ def get_db():
     
     # 修正前: return firestore.Client(credentials=creds, project=key_dict["project_id"])
     # 修正後: database="calorie" を追加して指定のデータベースに接続する
-    return firestore.Client(credentials=creds, project=key_dict["project_id"], database="calorie")
+    return firestore.Client(credentials=creds, project=key_dict["project_id"], database="default")
     
 db = get_db()
 
