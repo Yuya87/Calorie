@@ -145,7 +145,7 @@ with tab1:
             st.write(input_text)
 
         with st.chat_message("assistant"):
-            with st.spinner("思考・解析中..."):
+            with st.spinner("解析・記録中..."):
                 recent_logs = get_recent_logs_for_context()
                 res = analyze_meal_or_chat(
                     st.session_state.messages,
