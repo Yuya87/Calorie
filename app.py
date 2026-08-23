@@ -4,12 +4,34 @@ import plotly.express as px
 from PIL import Image
 import io
 import json
-from datetime import datetime
+import datetime
 from google.cloud import firestore
 from google.oauth2 import service_account
 from gemini_helper import analyze_meal_or_chat
 
+# ------------------------------------------------------------------------------
+# 1. Page Config & CSS (タイトルの文字サイズおよび全体レイアウトの調整)
+# ------------------------------------------------------------------------------
 st.set_page_config(page_title="AIボディメイク", layout="wide")
+
+st.markdown("""
+    <style>
+    /* メインタイトルのフォントサイズ・余白調整 */
+    h1 {
+        font-size: 1.6rem !important;
+        padding-top: 0.2rem !important;
+        padding-bottom: 0.4rem !important;
+    }
+    /* サブタイトルのフォントサイズ調整 */
+    h2 {
+        font-size: 1.3rem !important;
+    }
+    h3 {
+        font-size: 1.05rem !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 st.title("🏃 AIボディメイク")
 
 # --- Firestore初期化 ---
@@ -22,7 +44,6 @@ def get_db():
         key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 
     creds = service_account.Credentials.from_service_account_info(key_dict)
-    # デフォルトデータベースに接続
     return firestore.Client(credentials=creds, project=key_dict["project_id"])
     
 db = get_db()
@@ -39,7 +60,7 @@ def get_current_goals():
                 "target_f": float(data.get("target_f", default_goals["target_f"])),
                 "target_c": float(data.get("target_c", default_goals["target_c"])),
             }
-    except Exception as e:
+    except Exception:
         return default_goals
     return default_goals
 
@@ -228,7 +249,8 @@ with tab1:
 
 # --- TAB 2: 栄養＆アルコール管理 ---
 with tab2:
-    st.header("日別PFC ＆ アルコール摂取推移")
+    st.header("日別 PFC ＆ アルコール摂取管理")
+    
     docs = db.collection("meals").get()
     meal_list = [d.to_dict() for d in docs]
 
@@ -238,24 +260,140 @@ with tab2:
         for col in ['calories', 'protein', 'fat', 'carbs', 'alcohol_g']:
             if col in df_m.columns:
                 df_m[col] = pd.to_numeric(df_m[col], errors='coerce').fillna(0)
+            else:
+                df_m[col] = 0.0
 
         df_meals = df_m.groupby('date').agg({
             'calories': 'sum', 'protein': 'sum', 'fat': 'sum', 'carbs': 'sum', 'alcohol_g': 'sum'
         }).reset_index().sort_values('date')
 
+        # ----------------------------------------------------------------------
+        # A. 達成状況（コンパクト表示）
+        # ----------------------------------------------------------------------
         latest = df_meals.iloc[-1]
-        st.subheader(f"📊 最新日 ({latest['date']}) の達成状況")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("摂取カロリー", f"{latest['calories']:.0f} kcal", f"{latest['calories'] - current_goals['target_cal']:.0f} kcal")
-        c2.metric("Protein (P)", f"{latest['protein']:.1f} g", f"{latest['protein'] - current_goals['target_p']:.1f} g")
-        c3.metric("Fat (F)", f"{latest['fat']:.1f} g", f"{latest['fat'] - current_goals['target_f']:.1f} g")
-        c4.metric("Carbs (C)", f"{latest['carbs']:.1f} g", f"{latest['carbs'] - current_goals['target_c']:.1f} g")
-        c5.metric("純アルコール", f"{latest['alcohol_g']:.1f} g")
+        st.subheader(f"🎯 本日 ({latest['date']}) の達成状況")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        
+        with c1:
+            cal_val = latest['calories']
+            cal_diff = cal_val - current_goals['target_cal']
+            st.metric("摂取カロリー", f"{cal_val:.0f} kcal", f"{cal_diff:+.0f} kcal")
+            st.progress(min(1.0, max(0.0, cal_val / current_goals['target_cal'])), text=f"目標: {current_goals['target_cal']:.0f} kcal")
 
-        st.plotly_chart(px.bar(df_meals, x='date', y=['protein', 'fat', 'carbs'], title="日別 PFC摂取量 (g)"), use_container_width=True)
-        st.plotly_chart(px.bar(df_meals, x='date', y='alcohol_g', title="アルコール摂取量 (g)", color_discrete_sequence=['#FFA500']), use_container_width=True)
+        with c2:
+            p_val = latest['protein']
+            p_diff = p_val - current_goals['target_p']
+            st.metric("Protein (P)", f"{p_val:.1f} g", f"{p_diff:+.1f} g")
+            st.progress(min(1.0, max(0.0, p_val / current_goals['target_p'])), text=f"目標: {current_goals['target_p']:.0f}g")
+
+        with c3:
+            f_val = latest['fat']
+            f_diff = f_val - current_goals['target_f']
+            st.metric("Fat (F)", f"{f_val:.1f} g", f"{f_diff:+.1f} g")
+            st.progress(min(1.0, max(0.0, f_val / current_goals['target_f'])), text=f"目標: {current_goals['target_f']:.0f}g")
+
+        with c4:
+            c_val = latest['carbs']
+            c_diff = c_val - current_goals['target_c']
+            st.metric("Carbs (C)", f"{c_val:.1f} g", f"{c_diff:+.1f} g")
+            st.progress(min(1.0, max(0.0, c_val / current_goals['target_c'])), text=f"目標: {current_goals['target_c']:.0f}g")
+
+        st.markdown("---")
+
+        # ----------------------------------------------------------------------
+        # B. PFC & アルコール推移 (1つの折れ線グラフで比較)
+        # ----------------------------------------------------------------------
+        st.subheader("📈 PFC ＆ アルコール摂取推移")
+
+        df_melted = df_meals.melt(
+            id_vars=["date"],
+            value_vars=["protein", "fat", "carbs", "alcohol_g"],
+            var_name="栄養要素",
+            value_name="量 (g)"
+        )
+
+        label_map = {
+            "protein": "Protein (P)",
+            "fat": "Fat (F)",
+            "carbs": "Carbs (C)",
+            "alcohol_g": "純アルコール (g)"
+        }
+        df_melted["栄養要素"] = df_melted["栄養要素"].map(label_map)
+
+        fig_line = px.line(
+            df_melted,
+            x="date",
+            y="量 (g)",
+            color="栄養要素",
+            markers=True,
+            color_discrete_map={
+                "Protein (P)": "#FF4B4B",
+                "Fat (F)": "#FFAA00",
+                "Carbs (C)": "#00B4D8",
+                "純アルコール (g)": "#9D4EDD"
+            }
+        )
+
+        fig_line.update_layout(
+            xaxis_title=None,
+            yaxis_title="グラム (g)",
+            legend_title=None,
+            margin=dict(l=10, r=10, t=10, b=10),
+            height=340,
+            hovermode="x unified"
+        )
+
+        st.plotly_chart(fig_line, use_container_width=True)
+
+        st.markdown("---")
+
+        # ----------------------------------------------------------------------
+        # C. 直近3日分の運動・食事サマリ
+        # ----------------------------------------------------------------------
+        st.subheader("📋 直近3日間の活動サマリ")
+
+        today = datetime.date.today()
+        recent_3_dates = [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)]
+
+        # 全運動データの取得
+        ex_docs = db.collection("exercises").get()
+        ex_list = [d.to_dict() for d in ex_docs]
+        df_ex_all = pd.DataFrame(ex_list) if ex_list else pd.DataFrame()
+
+        cols = st.columns(3)
+        for idx, target_d in enumerate(recent_3_dates):
+            with cols[idx]:
+                day_label = "本日" if idx == 0 else ("昨日" if idx == 1 else "一昨日")
+                st.markdown(f"**📅 {target_d} ({day_label})**")
+
+                # 食事ログの抽出
+                day_meals = df_m[df_m['date'] == target_d] if not df_m.empty else pd.DataFrame()
+                with st.expander("🥗 食事内容", expanded=True):
+                    if not day_meals.empty:
+                        for _, row in day_meals.iterrows():
+                            fname = row.get('food_name', '食事')
+                            cal = row.get('calories', 0)
+                            alc = row.get('alcohol_g', 0)
+                            alc_str = f" / Alc:{alc:.0f}g" if alc > 0 else ""
+                            st.markdown(f"- **{fname}** ({cal:.0f}kcal{alc_str})")
+                    else:
+                        st.caption("記録がありません")
+
+                # 運動ログの抽出
+                day_ex = df_ex_all[df_ex_all['date'] == target_d] if not df_ex_all.empty and 'date' in df_ex_all.columns else pd.DataFrame()
+                with st.expander("🏃 運動内容", expanded=True):
+                    if not day_ex.empty:
+                        for _, row in day_ex.iterrows():
+                            ename = row.get('exercise_name', '運動')
+                            dur = row.get('duration_min', 0)
+                            burn = row.get('burned_calories', 0)
+                            st.markdown(f"- **{ename}** {dur:.0f}分 ({burn:.0f}kcal消費)")
+                    else:
+                        st.caption("記録がありません")
+
     else:
-        st.info("データがまだありません。")
+        st.info("データがまだありません。AI対話タブから食事を記録してください。")
 
 # --- TAB 3: カロリー収支＆運動 ---
 with tab3:
