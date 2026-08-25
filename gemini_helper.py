@@ -139,6 +139,23 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
 
         raw_text = response.text.strip()
         
+        # 不要なマークダウンコードブロックのクリーンアップ
         if raw_text.startswith("```"):
             raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
-            raw_text = re.sub(r"\s*
+            raw_text = re.sub(r"\s*```$", "", raw_text)
+
+        # JSON変換して辞書形式で返却
+        return json.loads(raw_text)
+
+    except Exception as e:
+        # パース失敗や通信エラー時のフォールバック処理
+        return {
+            "action_type": "GENERAL_CHAT",
+            "target_date": None,
+            "assistant_response": f"解析中にエラーが発生しました: {str(e)}",
+            "meal_data": None,
+            "exercise_data": None,
+            "target_doc_id": None,
+            "target_collection": None,
+            "goal_data": None
+        }
