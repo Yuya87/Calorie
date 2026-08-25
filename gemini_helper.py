@@ -2,8 +2,14 @@ import os
 import json
 import re
 import datetime
+from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
+
+# ------------------------------------------------------------------------------
+# タイムゾーン設定 (ベトナム時間: Asia/Ho_Chi_Minh)
+# ------------------------------------------------------------------------------
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 # ------------------------------------------------------------------------------
 # システムプロンプト（Geminiの役割・レスポンスフォーマット・判定ルール定義）
@@ -58,9 +64,10 @@ SYSTEM_INSTRUCTION = """
 【判定ルール】
 1. 日付: 指定があれば YYYY-MM-DD を算出して `target_date` に設定。無ければ null。
 2. 明示的数値: ユーザーが「約34kcal」「P 7.2g」等と記載している場合はその数値を優先。
-3. ログの修正・削除:
+3. ログの修正・削除・照会:
    - 「直近ログ一覧」から該当する `doc_id` と `collection` (`meals` または `exercises`) を特定して `UPDATE_LOG` / `DELETE_LOG` を返します。
    - 日付を修正する指示（例: 「昨日のカレーを今日に変更して」「さっきの食事を8/20にして」等）の場合、`target_date` に移動後の日付を設定し、対象の `target_doc_id` と `target_collection` を指定してください。
+   - ログの参照・確認の質問（例: 「8/23の食事を教えて」等）の場合、`action_type`: "GENERAL_CHAT" として、「直近ログ一覧」にある該当日のデータを元にユーザーへ丁寧にお答えください。
    - 変更・削除対象が複数あったり特定できない場合は、勝手に決めずに `action_type`: "GENERAL_CHAT" として「どのログ（日付や料理名）を変更しますか？」と確認を求めてください。
 4. アルコール: ビールやハイボール等の純アルコール量(g) = 度数% × 量ml × 0.8 / 100 を算出して `alcohol_g` に設定。
 """
@@ -85,7 +92,7 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
 
     if existing_logs:
         logs_summary = []
-        for log in existing_logs[-8:]:
+        for log in existing_logs:
             if "system_user_rules" in log:
                 user_rules_str = log["system_user_rules"]
             else:
@@ -107,8 +114,8 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
     if user_rules_str:
         context_str = user_rules_str + "\n" + context_str
 
-    # 2. プロンプト生成
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    # 2. プロンプト生成 (ベトナム時間で本日日付を設定)
+    today_str = datetime.datetime.now(VN_TZ).strftime("%Y-%m-%d")
     prompt_content = [
         f"本日: {today_str}\n",
         context_str,
