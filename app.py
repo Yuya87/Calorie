@@ -47,7 +47,7 @@ def get_db():
 db = get_db()
 
 def get_current_goals():
-    default_goals = {"target_cal": 2000.0, "target_p": 120.0, "target_f": 50.0, "target_c": 200.0}
+    default_goals = {"target_cal": 2000.0, "target_p": 120.0, "target_f": 50.0, "target_c": 200.0, "target_alc": 20.0}
     try:
         docs = db.collection("user_goals").order_by("updated_at", direction=firestore.Query.DESCENDING).limit(1).get()
         if docs:
@@ -57,6 +57,7 @@ def get_current_goals():
                 "target_p": float(data.get("target_p", default_goals["target_p"])),
                 "target_f": float(data.get("target_f", default_goals["target_f"])),
                 "target_c": float(data.get("target_c", default_goals["target_c"])),
+                "target_alc": float(data.get("target_alc", default_goals["target_alc"])),
             }
     except Exception:
         return default_goals
@@ -75,9 +76,9 @@ def get_latest_bmr():
         pass
     return 1500.0
 
-def update_goals(cal, p, f, c):
+def update_goals(cal, p, f, c, alc):
     db.collection("user_goals").add({
-        "target_cal": cal, "target_p": p, "target_f": f, "target_c": c,
+        "target_cal": cal, "target_p": p, "target_f": f, "target_c": c, "target_alc": alc,
         "updated_at": firestore.SERVER_TIMESTAMP
     })
 
@@ -143,7 +144,7 @@ def get_recent_logs_for_context():
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "こんにちは！AIボディメイクアシスタントです。食事や運動ログの登録、修正、削除など気軽にお申し付けください！"}
+        {"role": "assistant", "content": "こんにちは！AIボディメイクアシスタントです。食事や運動ログの登録、日付変更、修正、削除など気軽にお申し付けください！"}
     ]
 
 current_goals = get_current_goals()
@@ -156,8 +157,9 @@ with st.sidebar.form("goal_form"):
     new_p = st.number_input("目標 P (g)", value=float(current_goals['target_p']), step=5.0)
     new_f = st.number_input("目標 F (g)", value=float(current_goals['target_f']), step=5.0)
     new_c = st.number_input("目標 C (g)", value=float(current_goals['target_c']), step=5.0)
+    new_alc = st.number_input("目標 純アルコール (g)", value=float(current_goals.get('target_alc', 20.0)), step=5.0)
     if st.form_submit_button("目標を更新"):
-        update_goals(new_cal, new_p, new_f, new_c)
+        update_goals(new_cal, new_p, new_f, new_c, new_alc)
         st.sidebar.success("目標を更新しました！")
         st.rerun()
 
@@ -183,7 +185,7 @@ with tab1:
     uploaded_img = st.file_uploader("写真を送信", type=["jpg", "jpeg", "png"], key="meal_photo")
     image_obj = Image.open(uploaded_img) if uploaded_img else None
 
-    user_input = st.chat_input("例: 昨日の夜に無水カレーとゆで卵を食べた / さっきの記録を削除して")
+    user_input = st.chat_input("例: 昨日の夜のカレーの日付を今日に変更して / さっきの記録を削除して")
 
     if user_input or (uploaded_img and st.button("写真を送信")):
         input_text = user_input if user_input else "写真を送信しました。"
@@ -251,14 +253,13 @@ with tab1:
                     
                     response_text += f"\n\n🏋️ **運動記録完了 [{target_date}]**:\n" + "\n".join(saved_summary)
 
-                # ログの更新（日付修正・フィールド修正バグの補正）
+                # ログの更新（食事・運動共通の日付/内容更新）
                 elif action_type == "UPDATE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
                     coll = res["target_collection"]
                     doc_id = res["target_doc_id"]
                     doc_ref = db.collection(coll).document(doc_id)
 
                     update_fields = {}
-                    # 日付変更の指示がある場合は日付を更新対象に含める
                     if res.get("target_date"):
                         update_fields["date"] = res["target_date"]
 
@@ -266,16 +267,17 @@ with tab1:
                         m = res["meal_data"]
                         if "items" in m and len(m["items"]) > 0: m = m["items"][0]
                         for k in ['food_name', 'calories', 'protein', 'fat', 'carbs', 'alcohol_g']:
-                            if k in m: update_fields[k] = m[k]
+                            if k in m and m[k] is not None: update_fields[k] = m[k]
                     elif coll == "exercises" and res.get("exercise_data"):
                         e = res["exercise_data"]
                         if "items" in e and len(e["items"]) > 0: e = e["items"][0]
                         for k in ['exercise_name', 'duration_min', 'burned_calories']:
-                            if k in e: update_fields[k] = e[k]
+                            if k in e and e[k] is not None: update_fields[k] = e[k]
 
                     if update_fields:
                         doc_ref.update(update_fields)
-                        response_text += f"\n\n✏️ **ログ修正完了** (ID: {doc_id})"
+                        date_info = f" (日付: {update_fields['date']})" if "date" in update_fields else ""
+                        response_text += f"\n\n✏️ **ログ更新完了**{date_info}"
 
                 # ログの削除
                 elif action_type == "DELETE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
@@ -290,7 +292,8 @@ with tab1:
                     update_goals(g.get("target_cal", current_goals['target_cal']),
                                  g.get("target_p", current_goals['target_p']),
                                  g.get("target_f", current_goals['target_f']),
-                                 g.get("target_c", current_goals['target_c']))
+                                 g.get("target_c", current_goals['target_c']),
+                                 g.get("target_alc", current_goals.get('target_alc', 20.0)))
                     response_text += f"\n\n🎯 **目標設定更新完了**"
                     st.rerun()
 
@@ -349,60 +352,73 @@ with tab2:
         st.markdown("---")
 
         # ----------------------------------------------------------------------
-        # 【上段】週の合計摂取量 vs 1週間総目標量（積み上げ棒グラフ & 前週比較）
+        # 【上段】直近3週間の月〜日 積み上げ比較グラフ
         # ----------------------------------------------------------------------
-        st.subheader("🗓️ 1週間(月〜日)の合計摂取カロリー比較")
+        st.subheader("🗓️ 直近3週間の摂取カロリー比較（月〜日 積み上げ）")
         
-        # 日付処理とISO週番号・曜日の付与
         df_meals['dt'] = pd.to_datetime(df_meals['date'])
-        df_meals['year_week'] = df_meals['dt'].dt.strftime('%G-W%V') # ISO年-週番号
-        df_meals['day_name'] = df_meals['dt'].dt.day_name()
         
-        day_order = {'Monday': '1.月', 'Tuesday': '2.火', 'Wednesday': '3.水', 'Thursday': '4.木', 'Friday': '5.金', 'Saturday': '6.土', 'Sunday': '7.日'}
-        df_meals['day_label'] = df_meals['day_name'].map(day_order)
+        # 今日を基準に 今週(0), 先週(1), 2週前(2) の開始（月曜日）を算出
+        today = datetime.date.today()
+        current_monday = today - datetime.timedelta(days=today.weekday())
+        
+        week_defs = [
+            {"label": "2週前", "start": current_monday - datetime.timedelta(weeks=2)},
+            {"label": "先週", "start": current_monday - datetime.timedelta(weeks=1)},
+            {"label": "今週", "start": current_monday}
+        ]
 
-        # 存在する週の一覧を取得して選択（デフォルトは最新週）
-        available_weeks = sorted(df_meals['year_week'].unique(), reverse=True)
-        weekly_target_cal = current_goals['target_cal'] * 7.0
+        day_order_map = {0: '1.月', 1: '2.火', 2: '3.水', 3: '4.木', 4: '5.金', 5: '6.土', 6: '7.日'}
 
-        if available_weeks:
-            col_sel, col_info = st.columns([1, 2])
-            with col_sel:
-                selected_week = st.selectbox("表示対象の週を選択:", available_weeks, index=0)
+        stacked_rows = []
+        for w in week_defs:
+            w_start = w["start"]
+            w_end = w_start + datetime.timedelta(days=6)
             
-            df_selected_week = df_meals[df_meals['year_week'] == selected_week].sort_values('day_label')
-            total_consumed = df_selected_week['calories'].sum()
-            diff_consumed = total_consumed - weekly_target_cal
+            # 当該期間のデータをフィルタリング
+            mask = (df_meals['dt'].dt.date >= w_start) & (df_meals['dt'].dt.date <= w_end)
+            df_w = df_meals[mask].copy()
             
-            with col_info:
-                st.metric(
-                    label=f"{selected_week} 週の総摂取カロリー (目標: {weekly_target_cal:.0f} kcal)",
-                    value=f"{total_consumed:.0f} kcal",
-                    delta=f"{diff_consumed:+.0f} kcal",
-                    delta_color="inverse"
-                )
+            if not df_w.empty:
+                df_w['week_label'] = w["label"]
+                df_w['day_label'] = df_w['dt'].dt.weekday.map(day_order_map)
+                for _, r in df_w.iterrows():
+                    stacked_rows.append({
+                        'week_label': w["label"],
+                        'day_label': r['day_label'],
+                        'calories': r['calories']
+                    })
 
-            # 積み上げ棒グラフ構築
-            fig_week = px.bar(
-                df_selected_week,
-                x='year_week',
+        if stacked_rows:
+            df_3weeks = pd.DataFrame(stacked_rows)
+            weekly_target_cal = current_goals['target_cal'] * 7.0
+
+            fig_3w = px.bar(
+                df_3weeks,
+                x='week_label',
                 y='calories',
                 color='day_label',
-                title=f"{selected_week} 曜日別積み上げ実績",
-                labels={'year_week': '週', 'calories': '摂取カロリー (kcal)', 'day_label': '曜日'},
-                category_orders={'day_label': ['1.月', '2.火', '3.水', '4.木', '5.金', '6.土', '7.日']},
+                title="2週前 vs 先週 vs 今週（曜日別積み上げカロリー）",
+                labels={'week_label': '週', 'calories': '摂取カロリー (kcal)', 'day_label': '曜日'},
+                category_orders={
+                    'week_label': ['2週前', '先週', '今週'],
+                    'day_label': ['1.月', '2.火', '3.水', '4.木', '5.金', '6.土', '7.日']
+                },
                 color_discrete_sequence=px.colors.qualitative.Pastel
             )
-            # 目標ライン（14,000kcal）の追加
-            fig_week.add_hline(
+            
+            # 7日間の目標カロリーラインを追加
+            fig_3w.add_hline(
                 y=weekly_target_cal, 
                 line_dash="dash", 
                 line_color="red", 
-                annotation_text=f"週目標: {weekly_target_cal:.0f} kcal", 
+                annotation_text=f"7日間目標: {weekly_target_cal:.0f} kcal", 
                 annotation_position="top right"
             )
-            fig_week.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_week, use_container_width=True)
+            fig_3w.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_3w, use_container_width=True)
+        else:
+            st.info("過去3週間分の食事ログがありません。")
 
         st.markdown("---")
 
@@ -412,6 +428,8 @@ with tab2:
         st.subheader("📈 指標別 日推移グラフ")
 
         col_g1, col_g2 = st.columns(2)
+
+        target_alc_val = current_goals.get('target_alc', 20.0)
 
         with col_g1:
             # 1. 摂取カロリー
@@ -426,8 +444,9 @@ with tab2:
             fig_f.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_f, use_container_width=True)
 
-            # 5. 純アルコール
+            # 5. 純アルコール（目標ライン追加）
             fig_alc = px.bar(df_meals, x='date', y='alcohol_g', title="純アルコール (g)", color_discrete_sequence=["#9D4EDD"])
+            fig_alc.add_hline(y=target_alc_val, line_dash="dash", line_color="red", annotation_text="目標上限")
             fig_alc.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_alc, use_container_width=True)
 
