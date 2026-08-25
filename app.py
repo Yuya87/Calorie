@@ -10,7 +10,7 @@ from google.oauth2 import service_account
 from gemini_helper import analyze_meal_or_chat
 
 # ------------------------------------------------------------------------------
-# 1. Page Config & CSS (タイトルの文字サイズおよび全体レイアウトの調整)
+# 1. Page Config & CSS
 # ------------------------------------------------------------------------------
 st.set_page_config(page_title="AIボディメイク", layout="wide")
 
@@ -117,12 +117,12 @@ def sanitize_firestore_data(data_dict):
 
 def get_recent_logs_for_context():
     try:
-        meals_docs = db.collection("meals").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
+        meals_docs = db.collection("meals").order_by("created_at", direction=firestore.Query.DESCENDING).limit(10).get()
     except Exception:
         meals_docs = []
 
     try:
-        ex_docs = db.collection("exercises").order_by("created_at", direction=firestore.Query.DESCENDING).limit(15).get()
+        ex_docs = db.collection("exercises").order_by("created_at", direction=firestore.Query.DESCENDING).limit(10).get()
     except Exception:
         ex_docs = []
 
@@ -215,7 +215,7 @@ with tab1:
                 action_type = res.get("action_type", "GENERAL_CHAT")
                 target_date = res.get("target_date") or pd.Timestamp.now().strftime('%Y-%m-%d')
 
-                # 食事ログ追加（複数一括追加対応）
+                # 食事ログ追加
                 if action_type == "MEAL_LOG" and res.get("meal_data"):
                     items = res["meal_data"].get("items", [res["meal_data"]])
                     saved_summary = []
@@ -235,7 +235,7 @@ with tab1:
                     
                     response_text += f"\n\n✅ **食事記録完了 [{target_date}]**:\n" + "\n".join(saved_summary)
 
-                # 運動ログ追加（複数一括追加対応）
+                # 運動ログ追加
                 elif action_type == "EXERCISE_LOG" and res.get("exercise_data"):
                     items = res["exercise_data"].get("items", [res["exercise_data"]])
                     saved_summary = []
@@ -251,13 +251,17 @@ with tab1:
                     
                     response_text += f"\n\n🏋️ **運動記録完了 [{target_date}]**:\n" + "\n".join(saved_summary)
 
-                # ログの更新
+                # ログの更新（日付修正・フィールド修正バグの補正）
                 elif action_type == "UPDATE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
                     coll = res["target_collection"]
                     doc_id = res["target_doc_id"]
                     doc_ref = db.collection(coll).document(doc_id)
 
                     update_fields = {}
+                    # 日付変更の指示がある場合は日付を更新対象に含める
+                    if res.get("target_date"):
+                        update_fields["date"] = res["target_date"]
+
                     if coll == "meals" and res.get("meal_data"):
                         m = res["meal_data"]
                         if "items" in m and len(m["items"]) > 0: m = m["items"][0]
@@ -344,47 +348,101 @@ with tab2:
 
         st.markdown("---")
 
-        st.subheader("📈 PFC ＆ アルコール摂取推移")
+        # ----------------------------------------------------------------------
+        # 【上段】週の合計摂取量 vs 1週間総目標量（積み上げ棒グラフ & 前週比較）
+        # ----------------------------------------------------------------------
+        st.subheader("🗓️ 1週間(月〜日)の合計摂取カロリー比較")
+        
+        # 日付処理とISO週番号・曜日の付与
+        df_meals['dt'] = pd.to_datetime(df_meals['date'])
+        df_meals['year_week'] = df_meals['dt'].dt.strftime('%G-W%V') # ISO年-週番号
+        df_meals['day_name'] = df_meals['dt'].dt.day_name()
+        
+        day_order = {'Monday': '1.月', 'Tuesday': '2.火', 'Wednesday': '3.水', 'Thursday': '4.木', 'Friday': '5.金', 'Saturday': '6.土', 'Sunday': '7.日'}
+        df_meals['day_label'] = df_meals['day_name'].map(day_order)
 
-        df_melted = df_meals.melt(
-            id_vars=["date"],
-            value_vars=["protein", "fat", "carbs", "alcohol_g"],
-            var_name="栄養要素",
-            value_name="量 (g)"
-        )
+        # 存在する週の一覧を取得して選択（デフォルトは最新週）
+        available_weeks = sorted(df_meals['year_week'].unique(), reverse=True)
+        weekly_target_cal = current_goals['target_cal'] * 7.0
 
-        label_map = {
-            "protein": "Protein (P)",
-            "fat": "Fat (F)",
-            "carbs": "Carbs (C)",
-            "alcohol_g": "純アルコール (g)"
-        }
-        df_melted["栄養要素"] = df_melted["栄養要素"].map(label_map)
+        if available_weeks:
+            col_sel, col_info = st.columns([1, 2])
+            with col_sel:
+                selected_week = st.selectbox("表示対象の週を選択:", available_weeks, index=0)
+            
+            df_selected_week = df_meals[df_meals['year_week'] == selected_week].sort_values('day_label')
+            total_consumed = df_selected_week['calories'].sum()
+            diff_consumed = total_consumed - weekly_target_cal
+            
+            with col_info:
+                st.metric(
+                    label=f"{selected_week} 週の総摂取カロリー (目標: {weekly_target_cal:.0f} kcal)",
+                    value=f"{total_consumed:.0f} kcal",
+                    delta=f"{diff_consumed:+.0f} kcal",
+                    delta_color="inverse"
+                )
 
-        fig_line = px.line(
-            df_melted,
-            x="date",
-            y="量 (g)",
-            color="栄養要素",
-            markers=True,
-            color_discrete_map={
-                "Protein (P)": "#FF4B4B",
-                "Fat (F)": "#FFAA00",
-                "Carbs (C)": "#00B4D8",
-                "純アルコール (g)": "#9D4EDD"
-            }
-        )
+            # 積み上げ棒グラフ構築
+            fig_week = px.bar(
+                df_selected_week,
+                x='year_week',
+                y='calories',
+                color='day_label',
+                title=f"{selected_week} 曜日別積み上げ実績",
+                labels={'year_week': '週', 'calories': '摂取カロリー (kcal)', 'day_label': '曜日'},
+                category_orders={'day_label': ['1.月', '2.火', '3.水', '4.木', '5.金', '6.土', '7.日']},
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            # 目標ライン（14,000kcal）の追加
+            fig_week.add_hline(
+                y=weekly_target_cal, 
+                line_dash="dash", 
+                line_color="red", 
+                annotation_text=f"週目標: {weekly_target_cal:.0f} kcal", 
+                annotation_position="top right"
+            )
+            fig_week.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_week, use_container_width=True)
 
-        fig_line.update_layout(
-            xaxis_title=None,
-            yaxis_title="グラム (g)",
-            legend_title=None,
-            margin=dict(l=10, r=10, t=10, b=10),
-            height=340,
-            hovermode="x unified"
-        )
+        st.markdown("---")
 
-        st.plotly_chart(fig_line, use_container_width=True)
+        # ----------------------------------------------------------------------
+        # 【下段】日別推移の個別棒グラフ（カロリー, P, F, C, 純アルコール）
+        # ----------------------------------------------------------------------
+        st.subheader("📈 指標別 日推移グラフ")
+
+        col_g1, col_g2 = st.columns(2)
+
+        with col_g1:
+            # 1. 摂取カロリー
+            fig_cal = px.bar(df_meals, x='date', y='calories', title="摂取カロリー (kcal)", color_discrete_sequence=["#2A9D8F"])
+            fig_cal.add_hline(y=current_goals['target_cal'], line_dash="dash", line_color="red", annotation_text="目標")
+            fig_cal.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_cal, use_container_width=True)
+
+            # 3. Fat (F)
+            fig_f = px.bar(df_meals, x='date', y='fat', title="Fat / 脂質 (g)", color_discrete_sequence=["#FFAA00"])
+            fig_f.add_hline(y=current_goals['target_f'], line_dash="dash", line_color="red", annotation_text="目標")
+            fig_f.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_f, use_container_width=True)
+
+            # 5. 純アルコール
+            fig_alc = px.bar(df_meals, x='date', y='alcohol_g', title="純アルコール (g)", color_discrete_sequence=["#9D4EDD"])
+            fig_alc.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_alc, use_container_width=True)
+
+        with col_g2:
+            # 2. Protein (P)
+            fig_p = px.bar(df_meals, x='date', y='protein', title="Protein / タンパク質 (g)", color_discrete_sequence=["#FF4B4B"])
+            fig_p.add_hline(y=current_goals['target_p'], line_dash="dash", line_color="red", annotation_text="目標")
+            fig_p.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_p, use_container_width=True)
+
+            # 4. Carbs (C)
+            fig_c = px.bar(df_meals, x='date', y='carbs', title="Carbs / 炭水化物 (g)", color_discrete_sequence=["#00B4D8"])
+            fig_c.add_hline(y=current_goals['target_c'], line_dash="dash", line_color="red", annotation_text="目標")
+            fig_c.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_c, use_container_width=True)
 
         st.markdown("---")
 
