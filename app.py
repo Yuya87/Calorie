@@ -5,9 +5,23 @@ from PIL import Image
 import io
 import json
 import datetime
+from zoneinfo import ZoneInfo
 from google.cloud import firestore
 from google.oauth2 import service_account
 from gemini_helper import analyze_meal_or_chat
+
+# ------------------------------------------------------------------------------
+# タイムゾーン設定 (ベトナム時間: Asia/Ho_Chi_Minh = UTC+7)
+# ------------------------------------------------------------------------------
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+def get_vietnam_now():
+    """ベトナム時間基準の現在日時(datetime)を取得"""
+    return datetime.datetime.now(VN_TZ)
+
+def get_vietnam_today():
+    """ベトナム時間基準の現在日付(date)を取得"""
+    return get_vietnam_now().date()
 
 # ------------------------------------------------------------------------------
 # 1. Page Config & CSS
@@ -215,7 +229,8 @@ with tab1:
 
                 response_text = res.get("assistant_response", "了解しました！")
                 action_type = res.get("action_type", "GENERAL_CHAT")
-                target_date = res.get("target_date") or pd.Timestamp.now().strftime('%Y-%m-%d')
+                # ベトナム標準時間ベースでデフォルトの日付(今日)を設定
+                target_date = res.get("target_date") or get_vietnam_today().strftime('%Y-%m-%d')
 
                 # 食事ログ追加
                 if action_type == "MEAL_LOG" and res.get("meal_data"):
@@ -358,8 +373,8 @@ with tab2:
         
         df_meals['dt'] = pd.to_datetime(df_meals['date'])
         
-        # 今日を基準に 今週(0), 先週(1), 2週前(2) の開始（月曜日）を算出
-        today = datetime.date.today()
+        # 今日（ベトナム時間）を基準に 今週(0), 先週(1), 2週前(2) の開始（月曜日）を算出
+        today = get_vietnam_today()
         current_monday = today - datetime.timedelta(days=today.weekday())
         
         week_defs = [
@@ -467,7 +482,7 @@ with tab2:
 
         st.subheader("📋 直近3日間の活動サマリ")
 
-        today = datetime.date.today()
+        today = get_vietnam_today()
         recent_3_dates = [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)]
 
         ex_docs = db.collection("exercises").get()
