@@ -131,13 +131,15 @@ def sanitize_firestore_data(data_dict):
     return sanitized
 
 def get_recent_logs_for_context():
+    """Geminiの文脈理解用に直近の日付のログを優先して取得"""
     try:
-        meals_docs = db.collection("meals").order_by("created_at", direction=firestore.Query.DESCENDING).limit(10).get()
+        # created_atではなくdateの降順で直近30件取得
+        meals_docs = db.collection("meals").order_by("date", direction=firestore.Query.DESCENDING).limit(30).get()
     except Exception:
         meals_docs = []
 
     try:
-        ex_docs = db.collection("exercises").order_by("created_at", direction=firestore.Query.DESCENDING).limit(10).get()
+        ex_docs = db.collection("exercises").order_by("date", direction=firestore.Query.DESCENDING).limit(30).get()
     except Exception:
         ex_docs = []
 
@@ -153,6 +155,9 @@ def get_recent_logs_for_context():
         data["doc_id"] = d.id
         data["collection"] = "exercises"
         logs.append(data)
+
+    # 日付降順でソートを揃える
+    logs.sort(key=lambda x: str(x.get("date", "")), reverse=True)
 
     return logs
 
