@@ -22,7 +22,7 @@ SYSTEM_INSTRUCTION = """
 - 必ずJSONフォーマットのみを出力してください。
 - Markdownのコードブロック（```json）や解説文章は一切含めないでください。
 - 文字列フィールド内でダブルクォーテーションを使う場合は必ずエスケープ (\\") してください。
-- 各文字列値の中で意図しない改行文字（CR/LF）を入れないでください。
+- assistant_response などの文字列値の中で改行が必要な場合は、生の改行（改行コード）を使わず、必ず \\n とエスケープ表記してください。
 
 【前提ルール・レシピ仕様の最優先適用】
 「【ユーザー定義の前提ルール・レシピ仕様】」が含まれる場合は、通常の数値よりそのルールを最優先して計算してください（例: 無水カレー=ノンオイル・胸肉仕様、ゆで卵=白身のみ等）。
@@ -71,6 +71,23 @@ SYSTEM_INSTRUCTION = """
    - 変更・削除対象が複数あったり特定できない場合は、勝手に決めずに `action_type`: "GENERAL_CHAT" として「どのログ（日付や料理名）を変更しますか？」と確認を求めてください。
 4. アルコール: ビールやハイボール等の純アルコール量(g) = 度数% × 量ml × 0.8 / 100 を算出して `alcohol_g` に設定。
 """
+
+def clean_json_string(text: str) -> str:
+    """レスポンス文字列からJSON部分を正確に抽出し、余分なコードブロックや制御文字を除去する"""
+    text = text.strip()
+    
+    # ```json ... ``` または ``` ... ``` を抽出
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+    else:
+        # { ... } の最外枠を探して切り出し
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            text = text[first_brace:last_brace + 1]
+            
+    return text
 
 def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=None):
     """
@@ -140,22 +157,32 @@ def analyze_meal_or_chat(messages_history, user_text, image=None, existing_logs=
                 system_instruction=SYSTEM_INSTRUCTION,
                 response_mime_type="application/json",
                 temperature=0.1,
-                max_output_tokens=1500
+                max_output_tokens=3000
             )
         )
 
         raw_text = response.text.strip()
-        
-        # 不要なマークダウンコードブロックのクリーンアップ
-        if raw_text.startswith("```"):
-            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
-            raw_text = re.sub(r"\s*```$", "", raw_text)
+        cleaned_text = clean_json_string(raw_text)
 
-        # JSON変換して辞書形式で返却
-        return json.loads(raw_text)
+        # JSON変換
+        try:
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError:
+            # 万が一パース失敗時は、Geminiが出力したレスポンス文章を拾って一般チャットとして返す
+            clean_response = re.sub(r'[\{\}\[\]"]', '', cleaned_text).strip()
+            return {
+                "action_type": "GENERAL_CHAT",
+                "target_date": None,
+                "assistant_response": clean_response if clean_response else raw_text,
+                "meal_data": None,
+                "exercise_data": None,
+                "target_doc_id": None,
+                "target_collection": None,
+                "goal_data": None
+            }
 
     except Exception as e:
-        # パース失敗や通信エラー時のフォールバック処理
+        # 通信エラー等の完全なフォールバック処理
         return {
             "action_type": "GENERAL_CHAT",
             "target_date": None,
