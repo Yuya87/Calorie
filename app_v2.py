@@ -7,7 +7,6 @@ from google.cloud import firestore
 import json
 from google import genai
 from google.genai import types
-import io
 
 # ---------------------------------------------------------
 # 1. ページ初期設定
@@ -24,7 +23,7 @@ st.set_page_config(
 # ---------------------------------------------------------
 @st.cache_resource
 def init_firestore():
-    """GCP Firestore クライアントの初期化"""
+    """GCP Firestore クライアントの初期化（堅牢化）"""
     try:
         if "gcp_service_account" in st.secrets:
             secret_val = st.secrets["gcp_service_account"]
@@ -33,15 +32,19 @@ def init_firestore():
             else:
                 key_dict = dict(secret_val)
             
-            if "private_key" in key_dict:
-                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            # private_key の改行コード処理を堅牢化
+            if "private_key" in key_dict and isinstance(key_dict["private_key"], str):
+                pk = key_dict["private_key"]
+                if "\\n" in pk:
+                    key_dict["private_key"] = pk.replace("\\n", "\n")
                 
             creds = service_account.Credentials.from_service_account_info(key_dict)
             return firestore.Client(credentials=creds, project=key_dict.get("project_id"))
         else:
+            # 認証情報がsecretsにない場合はデフォルトログインを試行
             return firestore.Client()
     except Exception as e:
-        st.error(f"Firestore初期化エラー: {e}")
+        st.error(f"⚠️ Firestore初期化エラー: Secretsの設定またはPrivateKeyを確認してください。({e})")
         return None
 
 db = init_firestore()
@@ -54,7 +57,7 @@ def get_gemini_client():
             return genai.Client(api_key=api_key)
         return genai.Client()
     except Exception as e:
-        st.error(f"Gemini API初期化エラー: {e}")
+        st.error(f"⚠️ Gemini API初期化エラー: GEMINI_API_KEY を確認してください。({e})")
         return None
 
 ai_client = get_gemini_client()
@@ -65,9 +68,12 @@ ai_client = get_gemini_client()
 def fetch_user_goals():
     if not db:
         return {"target_cal": 2200, "target_p": 160, "target_f": 50, "target_c": 250}
-    docs = db.collection("user_goals").order_by("updated_at", direction=firestore.Query.DESCENDING).limit(1).get()
-    for doc in docs:
-        return doc.to_dict()
+    try:
+        docs = db.collection("user_goals").order_by("updated_at", direction=firestore.Query.DESCENDING).limit(1).get()
+        for doc in docs:
+            return doc.to_dict()
+    except Exception as e:
+        st.warning(f"目標設定の取得に失敗しました: {e}")
     return {"target_cal": 2200, "target_p": 160, "target_f": 50, "target_c": 250}
 
 def save_user_goals(cal, p, f, c):
@@ -83,26 +89,40 @@ def save_user_goals(cal, p, f, c):
 def fetch_daily_meals(selected_date_str):
     if not db:
         return []
-    docs = db.collection("meals").where("date", "==", selected_date_str).get()
-    return [d.to_dict() for d in docs]
+    try:
+        docs = db.collection("meals").where("date", "==", selected_date_str).get()
+        return [d.to_dict() for d in docs]
+    except Exception as e:
+        st.error(f"食事データの取得エラー: {e}")
+        return []
 
 def fetch_daily_exercises(selected_date_str):
     if not db:
         return []
-    docs = db.collection("exercises").where("date", "==", selected_date_str).get()
-    return [d.to_dict() for d in docs]
+    try:
+        docs = db.collection("exercises").where("date", "==", selected_date_str).get()
+        return [d.to_dict() for d in docs]
+    except Exception as e:
+        st.error(f"運動データの取得エラー: {e}")
+        return []
 
 def fetch_body_comp(selected_date_str):
     if not db:
         return None
-    doc = db.collection("body_composition").document(selected_date_str).get()
-    return doc.to_dict() if doc.exists else None
+    try:
+        doc = db.collection("body_composition").document(selected_date_str).get()
+        return doc.to_dict() if doc.exists else None
+    except Exception as e:
+        return None
 
 def fetch_journal(selected_date_str):
     if not db:
         return None
-    doc = db.collection("journals").document(selected_date_str).get()
-    return doc.to_dict() if doc.exists else None
+    try:
+        doc = db.collection("journals").document(selected_date_str).get()
+        return doc.to_dict() if doc.exists else None
+    except Exception as e:
+        return None
 
 def save_journal(selected_date_str, note, ai_feedback=""):
     if db:
@@ -116,9 +136,12 @@ def save_journal(selected_date_str, note, ai_feedback=""):
 def fetch_daily_habit(selected_date_str):
     if not db:
         return {"gym": "未記録", "english": "未記録", "rest_day": "未記録", "memo": ""}
-    doc = db.collection("daily_habits").document(selected_date_str).get()
-    if doc.exists:
-        return doc.to_dict()
+    try:
+        doc = db.collection("daily_habits").document(selected_date_str).get()
+        if doc.exists:
+            return doc.to_dict()
+    except Exception as e:
+        pass
     return {"gym": "未記録", "english": "未記録", "rest_day": "未記録", "memo": ""}
 
 def save_daily_habit(selected_date_str, gym_status, english_status, rest_status, memo=""):
@@ -135,17 +158,20 @@ def save_daily_habit(selected_date_str, gym_status, english_status, rest_status,
 def fetch_habits_range(start_date_str, end_date_str):
     if not db:
         return []
-    docs = db.collection("daily_habits")\
-        .where("date", ">=", start_date_str)\
-        .where("date", "<=", end_date_str).get()
-    return [d.to_dict() for d in docs]
+    try:
+        docs = db.collection("daily_habits")\
+            .where("date", ">=", start_date_str)\
+            .where("date", "<=", end_date_str).get()
+        return [d.to_dict() for d in docs]
+    except Exception as e:
+        return []
 
 # ---------------------------------------------------------
 # 4. AI解析ロジック (Gemini 3.6 Flash)
 # ---------------------------------------------------------
 def parse_and_save_meal(user_text, target_date_str, is_eating_out=False, restaurant_name="", dining_partners="", eating_out_comment=""):
     if not ai_client:
-        return "AIクライアントが初期化されていません。"
+        return "AIクライアントが初期化されていません。GEMINI_API_KEYを確認してください。"
 
     prompt = f"""
 あなたは優しく優秀なパーソナルボディメイクコーチです。
@@ -242,6 +268,9 @@ def parse_and_save_exercise(user_text, target_date_str):
 # ---------------------------------------------------------
 st.title("💪 AI Body Make & Habit Tracker")
 
+if not db:
+    st.warning("⚠️ 現在データベース(Firestore)に接続できていません。Streamlit Community Cloudの Secrets 設定を確認してください。")
+
 # サイドバー: 目標設定
 with st.sidebar:
     st.header("⚙️ システム設定")
@@ -281,7 +310,7 @@ with tab1:
 
     st.divider()
 
-    # 2. 習慣化チェックイン
+    # 1. 習慣化チェックイン
     st.subheader("🏋️ 1. 習慣化チェックイン")
     habit_options = ["目標達成", "一応やった", "未実施", "未記録"]
 
@@ -305,7 +334,7 @@ with tab1:
 
     st.divider()
 
-    # 3. 食事ログ入力
+    # 2. 食事ログ入力
     st.subheader("🥗 2. 食事ログの入力")
     if exist_meals:
         with st.expander(f"📋 登録済みの食事 ({len(exist_meals)} 件)", expanded=True):
@@ -336,7 +365,7 @@ with tab1:
 
     st.divider()
 
-    # 4. 運動ログ入力
+    # 3. 運動ログ入力
     st.subheader("🏃 3. 運動ログの入力")
     if exist_exercises:
         with st.expander(f"📋 登録済みの運動 ({len(exist_exercises)} 件)", expanded=True):
@@ -377,7 +406,7 @@ with tab1:
 
     st.divider()
 
-    # 5. ジャーナリング入力
+    # 4. ジャーナリング入力
     st.subheader("📖 4. 本日のジャーナリング（振り返り）")
     with st.form("journal_input_form"):
         j_note = st.text_area(
@@ -392,9 +421,9 @@ with tab1:
 
     st.divider()
 
-    # 6. 体組成データのCSVインポート
+    # 5. 体組成データのCSVインポート
     st.subheader("⚙️ 5. 体組成データの入力 (CSV一括アップロード)")
-    st.info("※対応形式: ご提供いただいたCSVフォーマット（測定日、体重(kg)、体脂肪(%)、骨格筋量(kg)、基礎代謝(kcal) が含まれるデータ）")
+    st.info("※対応形式: オムロン / タニタ等の体組成計CSVデータ（測定日、体重(kg)、体脂肪(%)、骨格筋量(kg)、基礎代謝(kcal) が含まれるデータ）")
     
     uploaded_file = st.file_uploader("体組成計のCSVデータをアップロード", type=["csv"])
     if uploaded_file is not None:
