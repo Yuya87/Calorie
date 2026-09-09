@@ -30,7 +30,6 @@ def init_firestore():
             creds = service_account.Credentials.from_service_account_info(key_dict)
             return firestore.Client(credentials=creds, project=key_dict.get("project_id"))
         else:
-            # ローカル等で環境変数が用意されている場合のフォールバック
             return firestore.Client()
     except Exception as e:
         st.error(f"Firestore初期化エラー: {e}")
@@ -52,7 +51,7 @@ def get_gemini_client():
 ai_client = get_gemini_client()
 
 # ---------------------------------------------------------
-# 3. データ操作ヘパー関数 (Firestore)
+# 3. データ操作ヘルパー関数 (Firestore)
 # ---------------------------------------------------------
 def fetch_user_goals():
     if not db:
@@ -116,7 +115,7 @@ def save_journal(selected_date_str, note, ai_feedback=""):
             "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
 
-# --- 習慣トラッカー関数 ---
+# 習慣トラッカー関数
 def fetch_daily_habit(selected_date_str):
     if not db:
         return {"gym": "未記録", "english": "未記録", "rest_day": "未記録", "memo": ""}
@@ -145,15 +144,15 @@ def fetch_habits_range(start_date_str, end_date_str):
     return [d.to_dict() for d in docs]
 
 # ---------------------------------------------------------
-# 4. AI処理ロジック (Gemini 3.6 Flash)
+# 4. AI解析ロジック (Gemini 3.6 Flash)
 # ---------------------------------------------------------
-def parse_and_save_log(user_text, target_date_str):
+def parse_and_save_meal(user_text, target_date_str, is_eating_out=False, restaurant_name="", dining_partners="", eating_out_comment=""):
     if not ai_client:
         return "AIクライアントが初期化されていません。"
 
     prompt = f"""
 あなたは優しく優秀なパーソナルボディメイクコーチです。
-ユーザーの発言から「食事」「運動」に関するデータを抽出し、以下のJSON形式厳守で出力してください。
+ユーザーの発言から「食事」に関するデータを抽出し、以下のJSON形式厳守で出力してください。
 
 対象日付: {target_date_str}
 
@@ -162,13 +161,10 @@ def parse_and_save_log(user_text, target_date_str):
   "meals": [
     {{"food_name": "品目名", "calories": 数値, "protein": 数値, "fat": 数値, "carbs": 数値, "alcohol_g": 数値}}
   ],
-  "exercises": [
-    {{"exercise_name": "種目名", "duration_min": 分数数値, "burned_calories": 数値}}
-  ],
-  "advice": "ユーザーへの温かい励ましとアドバイス（100文字程度）"
+  "advice": "ユーザーへの温かい励ましと栄養アドバイス（100文字程度）"
 }}
 
-※該当がないデータ配列は空 `[]` としてください。
+※食事データの該当がない場合は空配列 `[]` としてください。
 ※数値は推定でかまいません。
 
 ユーザーの発言:
@@ -184,19 +180,55 @@ def parse_and_save_log(user_text, target_date_str):
         )
         data = json.loads(response.text)
         
-        # Firestoreへの保存処理
         if db:
             for m in data.get("meals", []):
                 m["date"] = target_date_str
+                m["is_eating_out"] = is_eating_out
+                m["restaurant_name"] = restaurant_name if is_eating_out else ""
+                m["dining_partners"] = dining_partners if is_eating_out else ""
+                m["eating_out_comment"] = eating_out_comment if is_eating_out else ""
                 m["created_at"] = firestore.SERVER_TIMESTAMP
                 db.collection("meals").add(m)
-            
+                
+        return data.get("advice", "食事記録を保存しました！")
+    except Exception as e:
+        return f"解析エラーが発生しました: {e}"
+
+def parse_and_save_exercise(user_text, target_date_str):
+    if not ai_client:
+        return "AIクライアントが初期化されていません。"
+
+    prompt = f"""
+ユーザーの発言から「運動」に関するデータを抽出し、以下のJSON形式厳守で出力してください。
+
+【抽出フォーマット】
+{{
+  "exercises": [
+    {{"exercise_name": "種目名", "duration_min": 分数数値, "burned_calories": 数値}}
+  ],
+  "advice": "運動に対する短い労いのコメント（50文字程度）"
+}}
+
+ユーザーの発言:
+{user_text}
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        data = json.loads(response.text)
+        
+        if db:
             for e in data.get("exercises", []):
                 e["date"] = target_date_str
                 e["created_at"] = firestore.SERVER_TIMESTAMP
                 db.collection("exercises").add(e)
                 
-        return data.get("advice", "記録を登録しました！")
+        return data.get("advice", "運動記録を保存しました！")
     except Exception as e:
         return f"解析エラーが発生しました: {e}"
 
@@ -205,16 +237,12 @@ def parse_and_save_log(user_text, target_date_str):
 # ---------------------------------------------------------
 st.title("💪 AI Body Make & Habit Tracker")
 
-# サイドバー: 日付選択 & 目標設定
+# サイドバー: 目標設定
 with st.sidebar:
-    st.header("📅 設定 & 操作")
-    selected_date = st.date_input("記録対象日", date.today())
-    selected_date_str = selected_date.strftime("%Y-%m-%d")
-    
-    st.divider()
+    st.header("⚙️ システム設定")
     st.subheader("🎯 目標マクロ設定")
     current_goals = fetch_user_goals()
-    with st.form("goals_form"):
+    with st.form("goals_form_side"):
         g_cal = st.number_input("目標カロリー (kcal)", value=int(current_goals.get("target_cal", 2200)))
         g_p = st.number_input("目標 P (g)", value=int(current_goals.get("target_p", 160)))
         g_f = st.number_input("目標 F (g)", value=int(current_goals.get("target_f", 50)))
@@ -223,49 +251,161 @@ with st.sidebar:
             save_user_goals(g_cal, g_p, g_f, g_c)
             st.success("目標を更新しました！")
 
-# メインタブの構成
+# タブ定義
 tab1, tab2, tab3, tab4 = st.tabs([
-    "💬 AI対話・食事運動入力", 
-    "📊 日次サマリー＆習慣・ジャーナル", 
-    "📈 履歴＆習慣化分析", 
-    "⚙️ 体組成・設定"
+    "📝 本日のデータ入力", 
+    "📊 日次サマリー＆KPI", 
+    "📈 習慣＆体組成の分析", 
+    "⚙️ 設定"
 ])
 
 # ---------------------------------------------------------
-# TAB 1: AI対話・食事運動入力
+# TAB 1: 本日のデータ入力 (メイン入力画面)
 # ---------------------------------------------------------
 with tab1:
-    st.subheader(f"💬 本日の対話・記録入力 ({selected_date_str})")
-    st.caption("食べたものや行った運動を自然な言葉で入力してください。AIが自動で成分や消費カロリーを抽出・保存します。")
+    # 1. 最上部: 日付選択 & ステータス表示
+    st.subheader("📅 記録対象日の選択")
+    date_col1, date_col2 = st.columns([1, 2])
+    with date_col1:
+        selected_date = st.date_input("入力・編集する日付", date.today(), key="main_date_input")
+        selected_date_str = selected_date.strftime("%Y-%m-%d")
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    # 既存データの取得（ステータス確認用）
+    exist_meals = fetch_daily_meals(selected_date_str)
+    exist_exercises = fetch_daily_exercises(selected_date_str)
+    exist_habit = fetch_daily_habit(selected_date_str)
+    exist_journal = fetch_journal(selected_date_str)
+    exist_body = fetch_body_comp(selected_date_str)
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    # ステータスパネル表示
+    with date_col2:
+        st.markdown("**📌 本日の登録状況ステータス**")
+        s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
+        
+        has_habit = exist_habit.get("gym") != "未記録" or exist_habit.get("english") != "未記録" or exist_habit.get("rest_day") != "未記録"
+        s_col1.markdown(f"**習慣**: {'✅ 記録済' if has_habit else '⚠️ 未入力'}")
+        s_col2.markdown(f"**食事**: {'✅ 記録済' if len(exist_meals) > 0 else '⚠️ 未入力'}")
+        s_col3.markdown(f"**運動**: {'✅ 記録済' if len(exist_exercises) > 0 else '⚠️ 未入力'}")
+        s_col4.markdown(f"**ジャーナル**: {'✅ 記録済' if exist_journal and exist_journal.get('note') else '⚠️ 未入力'}")
+        s_col5.markdown(f"**体組成**: {'✅ 記録済' if exist_body and exist_body.get('weight') else '⚠️ 未入力'}")
 
-    if user_input := st.chat_input("例: 朝食に胸肉150gとブロッコリーを食べた。夜は10kmランニング。"):
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+    st.divider()
 
-        with st.chat_message("assistant"):
-            with st.spinner("AIがログを解析中..."):
-                advice = parse_and_save_log(user_input, selected_date_str)
-                st.markdown(advice)
-                st.session_state.messages.append({"role": "assistant", "content": advice})
+    # 2. 習慣化チェックイン
+    st.subheader("🏋️ 1. 習慣化チェックイン")
+    habit_options = ["目標達成", "できてないけど一応やった", "やらなかった", "未記録"]
+
+    with st.form("habit_input_form"):
+        h_col1, h_col2, h_col3 = st.columns(3)
+        with h_col1:
+            gym_val = st.selectbox("🏋️ ジム / 筋トレ", habit_options, index=habit_options.index(exist_habit.get("gym", "未記録")))
+        with h_col2:
+            eng_val = st.selectbox("📚 英語学習", habit_options, index=habit_options.index(exist_habit.get("english", "未記録")))
+        with h_col3:
+            rest_val = st.selectbox("🍺/🚬 休肝日・休煙日", habit_options, index=habit_options.index(exist_habit.get("rest_day", "未記録")))
+            
+        h_memo = st.text_input("習慣メモ", value=exist_habit.get("memo", ""), placeholder="例: 脚トレ実施 / 瞬間英作文20分")
+        if st.form_submit_button("習慣化データを保存"):
+            save_daily_habit(selected_date_str, gym_val, eng_val, rest_val, h_memo)
+            st.success("習慣化データを保存しました！")
+            st.rerun()
+
+    st.divider()
+
+    # 3. 食事ログ入力（AI入力 ＋ 外食オプション）
+    st.subheader("🥗 2. 食事ログの入力")
+    
+    # 登録済み食事データの表示
+    if exist_meals:
+        with st.expander(f"📋 登録済みの食事 ({len(exist_meals)} 件)", expanded=True):
+            for idx, m in enumerate(exist_meals, 1):
+                out_info = f" 【外食: {m.get('restaurant_name', '')} / 同行: {m.get('dining_partners', '')}】" if m.get("is_eating_out") else ""
+                st.write(f"{idx}. **{m.get('food_name')}** - {m.get('calories')}kcal (P:{m.get('protein')}g F:{m.get('fat')}g C:{m.get('carbs')}g){out_info}")
+
+    with st.form("meal_ai_form"):
+        meal_text = st.text_area("食事内容（AIが栄養素を解析します）", placeholder="例: 昼食に丸の内のうなぎ屋で特上うな重を食べた。炭水化物多め。")
+        
+        # 外食フラグ & 詳細項目
+        is_out = st.checkbox("🍔 外食・会食として記録する")
+        
+        rest_name, partners, out_comment = "", "", ""
+        if is_out:
+            m_col1, m_col2 = st.columns(2)
+            rest_name = m_col1.text_input("店名・場所", placeholder="例: 叙々苑 六本木店")
+            partners = m_col2.text_input("誰と（同行者）", placeholder="例: 取引先担当者、チームメンバー")
+            out_comment = st.text_input("外食に関するメモ・評価", placeholder="例: ビジネス会食。アルコールは控えめに抑えた。")
+
+        if st.form_submit_button("AIで解析して食事を保存"):
+            if meal_text.strip():
+                with st.spinner("AIが栄養素を解析中..."):
+                    adv = parse_and_save_meal(meal_text, selected_date_str, is_out, rest_name, partners, out_comment)
+                    st.success(f"保存完了: {adv}")
+                    st.rerun()
+            else:
+                st.warning("食事内容を入力してください。")
+
+    st.divider()
+
+    # 4. 運動ログ入力
+    st.subheader("🏃 3. 運動ログの入力")
+    if exist_exercises:
+        with st.expander(f"📋 登録済みの運動 ({len(exist_exercises)} 件)", expanded=True):
+            for idx, e in enumerate(exist_exercises, 1):
+                st.write(f"{idx}. **{e.get('exercise_name')}** - {e.get('duration_min')}分 ({e.get('burned_calories')} kcal消費)")
+
+    with st.form("exercise_ai_form"):
+        ex_text = st.text_area("運動内容", placeholder="例: 10kmランニング 50分、ベンチプレス 30分")
+        if st.form_submit_button("AIで解析して運動を保存"):
+            if ex_text.strip():
+                with st.spinner("AIが消費カロリーを解析中..."):
+                    adv = parse_and_save_exercise(ex_text, selected_date_str)
+                    st.success(f"保存完了: {adv}")
+                    st.rerun()
+            else:
+                st.warning("運動内容を入力してください。")
+
+    st.divider()
+
+    # 5. ジャーナリング入力
+    st.subheader("📖 4. 本日のジャーナリング（振り返り）")
+    with st.form("journal_input_form"):
+        j_note = st.text_area(
+            "振り返り・体調・気づき", 
+            value=exist_journal.get("note", "") if exist_journal else "",
+            height=100,
+            placeholder="今日の体調、メンタル、気づいたこと..."
+        )
+        if st.form_submit_button("ジャーナルを保存"):
+            save_journal(selected_date_str, j_note, exist_journal.get("ai_feedback", "") if exist_journal else "")
+            st.success("ジャーナルを保存しました！")
+            st.rerun()
+
+    st.divider()
+
+    # 6. 体組成データの入力
+    st.subheader("⚙️ 5. 体組成データの入力")
+    with st.form("body_comp_input_form"):
+        b_col1, b_col2 = st.columns(2)
+        w = b_col1.number_input("体重 (kg)", value=float(exist_body.get("weight", 70.0)) if exist_body else 70.0, step=0.1)
+        bf = b_col2.number_input("体脂肪率 (%)", value=float(exist_body.get("body_fat", 18.0)) if exist_body else 18.0, step=0.1)
+        mm = b_col1.number_input("筋肉量 (kg)", value=float(exist_body.get("muscle_mass", 55.0)) if exist_body else 55.0, step=0.1)
+        bmr = b_col2.number_input("基礎代謝 (kcal)", value=float(exist_body.get("bmr", 1600.0)) if exist_body else 1600.0, step=10.0)
+        
+        if st.form_submit_button("体組成データを保存"):
+            save_body_comp(selected_date_str, w, bf, mm, bmr)
+            st.success("体組成データを保存しました！")
+            st.rerun()
 
 # ---------------------------------------------------------
-# TAB 2: 日次サマリー ＆ 習慣・ジャーナル
+# TAB 2: 日次サマリー ＆ KPI (閲覧・確認)
 # ---------------------------------------------------------
 with tab2:
     st.subheader(f"📊 日次サマリー ({selected_date_str})")
     
-    # 1. 栄養・運動データ計算
     meals = fetch_daily_meals(selected_date_str)
     exercises = fetch_daily_exercises(selected_date_str)
     goals = fetch_user_goals()
+    habit = fetch_daily_habit(selected_date_str)
     
     tot_cal = sum(m.get("calories", 0) for m in meals)
     tot_p = sum(m.get("protein", 0) for m in meals)
@@ -283,79 +423,27 @@ with tab2:
 
     st.divider()
 
-    # 2. 習慣化チェックイン セクション (新規追加)
-    st.subheader("🏋️ 習慣化チェックイン")
-    st.caption("今日の習慣達成状況を選択して更新してください。")
-
-    habit_data = fetch_daily_habit(selected_date_str)
-    habit_options = ["目標達成", "できてないけど一応やった", "やらなかった", "未記録"]
-
-    with st.form("habit_checkin_form"):
-        h_col1, h_col2, h_col3 = st.columns(3)
-        
-        with h_col1:
-            gym_val = st.selectbox(
-                "🏋️ ジム / 筋トレ", 
-                options=habit_options, 
-                index=habit_options.index(habit_data.get("gym", "未記録"))
-            )
-        with h_col2:
-            eng_val = st.selectbox(
-                "📚 英語学習", 
-                options=habit_options, 
-                index=habit_options.index(habit_data.get("english", "未記録"))
-            )
-        with h_col3:
-            rest_val = st.selectbox(
-                "🍺/🚬 休肝日・休煙日", 
-                options=habit_options, 
-                index=habit_options.index(habit_data.get("rest_day", "未記録"))
-            )
-        
-        habit_memo = st.text_input("習慣化メモ（例: 脚トレ実施 / 瞬間英作文20分）", value=habit_data.get("memo", ""))
-        
-        if st.form_submit_button("習慣化チェックインを保存"):
-            save_daily_habit(selected_date_str, gym_val, eng_val, rest_val, habit_memo)
-            st.success("習慣化データを保存しました！")
-            st.rerun()
-
-    # 直近7日間の週間習慣達成度サマリー
-    st.markdown("##### 🗓️ 直近7日間の習慣達成サマリー")
-    start_7d = (selected_date - timedelta(days=6)).strftime("%Y-%m-%d")
-    recent_habits = fetch_habits_range(start_7d, selected_date_str)
-    
-    if recent_habits:
-        df_rec = pd.DataFrame(recent_habits)
-        q_col1, q_col2, q_col3 = st.columns(3)
-        
-        for idx, (col, key, label) in enumerate([
-            (q_col1, "gym", "🏋️ ジム"), 
-            (q_col2, "english", "📚 英語"), 
-            (q_col3, "rest_day", "🍺 休肝/休煙")
-        ]):
-            if key in df_rec.columns:
-                achieved_cnt = (df_rec[key] == "目標達成").sum()
-                partial_cnt = (df_rec[key] == "できてないけど一応やった").sum()
-                col.info(f"**{label}**: 達成 {achieved_cnt}/7日 (一部達成: {partial_cnt}日)")
-    else:
-        st.caption("過去7日間の習慣記録はまだありません。")
+    # 習慣達成表示
+    st.markdown("##### 🏋️ 本日の習慣達成ステータス")
+    hc1, hc2, hc3 = st.columns(3)
+    hc1.info(f"**ジム/筋トレ**: {habit.get('gym', '未記録')}")
+    hc2.info(f"**英語学習**: {habit.get('english', '未記録')}")
+    hc3.info(f"**休肝・休煙日**: {habit.get('rest_day', '未記録')}")
 
     st.divider()
 
-    # 3. 振り返り・ジャーナリング セクション
-    st.subheader("📖 本日のジャーナリング")
-    current_journal = fetch_journal(selected_date_str) or {}
-    
-    with st.form("journal_form"):
-        j_note = st.text_area(
-            "本日の振り返り・体調・メンタルメモ", 
-            value=current_journal.get("note", ""),
-            height=100,
-            placeholder="今日のコンディションや反省点、気づいたことを自由に入力..."
-        )
-        if st.form_submit_button("ジャーナルを保存"):
-            save_journal(selected_date_str, j_note, current_journal.get("ai_feedback", ""))
-            st.success("ジャーナルを保存しました！")
+    # 食事明細（外食ハイライト）
+    st.markdown("##### 🥗 食事明細＆外食記録")
+    if meals:
+        for m in meals:
+            if m.get("is_eating_out"):
+                st.warning(f"🍺 **【外食】{m.get('food_name')}** ({m.get('calories')} kcal)\n"
+                           f"- 店名: {m.get('restaurant_name', '未入力')} / 同行者: {m.get('dining_partners', '未入力')}\n"
+                           f"- メモ: {m.get('eating_out_comment', 'なし')}")
+            else:
+                st.write(f"🍽️ **{m.get('food_name')}** - {m.get('calories')} kcal (P:{m.get('protein')}g, F:{m.get('fat')}g, C:{m.get('carbs')}g)")
+    else:
+        st.caption("食事データはありません。")
 
 # ---------------------------------------------------------
 # TAB 3: 履歴 ＆ 習慣化分析
@@ -363,7 +451,6 @@ with tab2:
 with tab3:
     st.subheader("📈 習慣化 ＆ 体組成データの分析")
     
-    # 習慣化分析（直近30日間）
     st.markdown("### 🗓️ 過去30日間の習慣達成分析")
     end_date_str = date.today().strftime("%Y-%m-%d")
     start_30d_str = (date.today() - timedelta(days=29)).strftime("%Y-%m-%d")
@@ -372,8 +459,6 @@ with tab3:
     
     if habits_30d:
         df_h = pd.DataFrame(habits_30d)
-        
-        # 内訳カウントグラフ
         chart_data = []
         for item, label in [("gym", "ジム/筋トレ"), ("english", "英語学習"), ("rest_day", "休肝・休煙")]:
             if item in df_h.columns:
@@ -401,23 +486,11 @@ with tab3:
         )
         st.plotly_chart(fig_habits, use_container_width=True)
     else:
-        st.info("過去30日間の習慣記録データが集まると、ここにグラフィカルな分析が表示されます。")
+        st.info("過去30日間の習慣記録データが集まると、ここにグラフが表示されます。")
 
 # ---------------------------------------------------------
-# TAB 4: 体組成・設定
+# TAB 4: 設定
 # ---------------------------------------------------------
 with tab4:
-    st.subheader(f"⚙️ 体組成データ登録 ({selected_date_str})")
-    
-    comp = fetch_body_comp(selected_date_str) or {}
-    
-    with st.form("body_comp_form"):
-        c_col1, c_col2 = st.columns(2)
-        w = c_col1.number_input("体重 (kg)", value=float(comp.get("weight", 70.0)), step=0.1)
-        bf = c_col2.number_input("体脂肪率 (%)", value=float(comp.get("body_fat", 18.0)), step=0.1)
-        mm = c_col1.number_input("筋肉量 (kg)", value=float(comp.get("muscle_mass", 55.0)), step=0.1)
-        bmr = c_col2.number_input("基礎代謝 (kcal)", value=float(comp.get("bmr", 1600.0)), step=10.0)
-        
-        if st.form_submit_button("体組成データを保存"):
-            save_body_comp(selected_date_str, w, bf, mm, bmr)
-            st.success("体組成データを保存しました！")
+    st.subheader("⚙️ アプリ・目標設定")
+    st.write("サイドバーから目標マクロ（カロリー、PFC）を変更・保存できます。")
