@@ -37,7 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Secrets 存在チェック（[gcp_service_account] または textkey の両方に対応）
+# Secrets 存在チェック
 has_firestore_key = "textkey" in st.secrets or "gcp_service_account" in st.secrets
 has_gemini_key = "GEMINI_API_KEY" in st.secrets
 
@@ -127,7 +127,23 @@ def fetch_logs_by_date(date_str):
     body_doc = db.collection("body_composition").document(date_str).get()
     body = body_doc.to_dict() if body_doc.exists else None
     
-    return meals, exercises, body
+    journal_doc = db.collection("journal_entries").document(date_str).get()
+    journal = journal_doc.to_dict() if journal_doc.exists else None
+    
+    return meals, exercises, body, journal
+
+def save_journal_entry(date_str, note, ai_feedback=""):
+    doc_ref = db.collection("journal_entries").document(date_str)
+    existing = doc_ref.get().to_dict() if doc_ref.get().exists else {}
+    update_data = {
+        "date": date_str,
+        "note": note,
+        "updated_at": firestore.SERVER_TIMESTAMP
+    }
+    if ai_feedback:
+        update_data["ai_feedback"] = ai_feedback
+    existing.update(update_data)
+    doc_ref.set(existing)
 
 def delete_firestore_document(collection_name, doc_id):
     db.collection(collection_name).document(doc_id).delete()
@@ -138,20 +154,20 @@ def delete_firestore_document(collection_name, doc_id):
 def get_system_prompt():
     rules_text = get_user_rules()
     prompt = f"""
-あなたはユーザー専属の「AIボディメイク・栄養アドバイザー」です。
-ユーザーの発言（食事内容、運動内容、体重・体組成データ、または雑談・質問）を解析し、適切なレスポンスを出力してください。
+あなたはユーザー専属の「AIボディメイク・栄養アドバイザー兼ライフコーチ」です。
+ユーザーの発言（食事内容、運動内容、体重・体組成データ、日記・感想・雑談・質問）を解析し、適切なレスポンスを出力してください。
 
 【ユーザー定義のログ計算ルール】
 ユーザーが定義した以下の特別ルール・マスターデータを優先して計算に適用してください。
 {rules_text}
 
 【重要指示】
-1. ユーザーが食事、運動、体重・体組成を報告した場合、必ず以下の厳密なJSON構造を含むレスポンスを生成してください。
-2. ユーザー報告内にデータ登録（食事・運動・体組成）が含まれる場合は、JSONオブジェクト内の "has_log_data" を true にし、該当フィールドに値を設定してください。
-3. 日常会話や質問のみでログデータが含まれない場合は、"has_log_data" を false とし、データ用フィールドは null または空配列にしてください。
+1. ユーザーが食事、運動、体重・体組成、または「日次の振り返り・感想・メンタル状態（ジャーナリング）」を報告した場合、必ず以下の厳密なJSON構造を含むレスポンスを生成してください。
+2. ユーザー報告内にデータ登録（食事・運動・体組成・ジャーナリング）が含まれる場合は、JSONオブジェクト内の "has_log_data" を true にし、該当フィールドに値を設定してください。
+3. ユーザーが「今日は少し体が重かった」「仕事が忙しかったが運動できた」「明日も頑張りたい」といった日記・感想・振り返りを書いている場合は、その内容を要約して "journal_note" に格納してください。
 4. アルコール（お酒）が入力に含まれる場合は、アルコールの純エタノール重量(g)を推定量で計算し "alcohol_g" に入れてください。
 5. カロリー・PFC・運動消費カロリーは客観的かつ現実的な推定量（float）で算出してください。
-6. JSONブロックの前後または内部で、アドバイザーとしてのフレンドリーで実践的なコメント（アドバイス、労い、質問への回答）を "reply_text" に格納してください。
+6. JSONブロックの前後または内部で、アドバイザーとしての共感的で実践的なコメント（アドバイス、労い、フィードバック）を "reply_text" に格納してください。
 
 【出力JSONフォーマット仕様】
 必ず以下のJSON構造を守って出力してください（Markdownの ```json ... ``` コードブロックで囲んでください）。
@@ -181,7 +197,8 @@ def get_system_prompt():
     "body_fat": null または 数値,
     "muscle_mass": null または 数値,
     "bmr": null または 数値
-  }}
+  }},
+  "journal_note": null または "ユーザーの振り返り・日記のメモ"
 }}
 """
     return prompt
@@ -272,6 +289,12 @@ def process_and_save_ai_response(response_raw_text, target_date_str):
         body_doc_ref.set(existing)
         saved_items.append(f"⚖️ 体組成データ ({target_date_str})")
 
+    # ジャーナリング（振り返りノート）保存
+    journal_note = data.get("journal_note")
+    if journal_note:
+        save_journal_entry(target_date_str, journal_note, ai_feedback=reply_text)
+        saved_items.append(f"📖 ジャーナリングノート ({target_date_str})")
+
     log_summary = ""
     if saved_items:
         log_summary = "\n\n**【登録されたデータ】**\n- " + "\n- ".join(saved_items)
@@ -295,7 +318,7 @@ with col_h2:
     selected_date_str = selected_date.strftime("%Y-%m-%d")
 
 # タブ構成
-tab1, tab2, tab3, tab4 = st.tabs(["💬 AIログ解析チャット", "📊 日次サマリー", "📈 履歴＆グラフ分析", "⚙️ 設定"])
+tab1, tab2, tab3, tab4 = st.tabs(["💬 AIログ解析チャット", "📊 日次サマリー＆ジャーナル", "📈 履歴＆グラフ分析", "⚙️ 設定"])
 
 # ------------------------------------------
 # TAB 1: AIログ解析チャット
@@ -309,7 +332,7 @@ with tab1:
             st.markdown(msg["content"])
 
     # ユーザー入力
-    user_input = st.chat_input("例: 朝食にプロテイン20gとゆで卵白身2個、ベンチプレス40分。体重68.5kg 体脂肪15%")
+    user_input = st.chat_input("例: 朝食に胸肉とブロッコリー。今日は脚トレ。少し疲れたけど頑張れた！")
     
     if user_input:
         # ユーザー発言表示
@@ -336,12 +359,12 @@ with tab1:
                     st.error(err_msg)
 
 # ------------------------------------------
-# TAB 2: 日次サマリー
+# TAB 2: 日次サマリー＆ジャーナル
 # ------------------------------------------
 with tab2:
     st.subheader(f"📊 {selected_date_str} の摂取・消費データ")
     
-    meals, exercises, body = fetch_logs_by_date(selected_date_str)
+    meals, exercises, body, journal = fetch_logs_by_date(selected_date_str)
     target_cal, target_p, target_f, target_c = get_user_goals()
     
     # 集計計算
@@ -407,13 +430,33 @@ with tab2:
         else:
             st.caption("体組成データ未登録")
 
+    st.divider()
+
+    # 📖 ジャーナリング（日記・振り返り）セクション
+    st.write("### 📖 本日のジャーナリング（振り返り・メンタル）")
+    
+    current_note = journal.get("note", "") if journal else ""
+    current_feedback = journal.get("ai_feedback", "") if journal else ""
+
+    with st.form("journal_form"):
+        note_input = st.text_area("今日の振り返り・体調・気づきメモ", value=current_note, height=120, placeholder="今日のコンディションや反省点、気づいたことを自由に入力...")
+        save_j_btn = st.form_submit_button("ジャーナルを保存")
+        if save_j_btn:
+            save_journal_entry(selected_date_str, note_input, current_feedback)
+            st.success("ジャーナルを保存しました！")
+            st.rerun()
+
+    if current_feedback:
+        with st.expander("🤖 AIからのフィードバック・アドバイス"):
+            st.write(current_feedback)
+
 # ------------------------------------------
 # TAB 3: 履歴＆グラフ分析
 # ------------------------------------------
 with tab3:
     st.subheader("📈 トレンド分析")
     
-    # 過去30日間の全データ取得
+    # 全データ取得
     all_meals = [d.to_dict() for d in db.collection("meals").get()]
     all_exercises = [d.to_dict() for d in db.collection("exercises").get()]
     all_body = [d.to_dict() for d in db.collection("body_composition").get()]
