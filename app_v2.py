@@ -32,6 +32,10 @@ def init_firestore():
                 key_dict = json.loads(secret_val)
             else:
                 key_dict = dict(secret_val)
+            
+            # 【重要修正】private_key の \n（文字としての\n）を実際の改行に変換
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
                 
             creds = service_account.Credentials.from_service_account_info(key_dict)
             return firestore.Client(credentials=creds, project=key_dict.get("project_id"))
