@@ -73,6 +73,10 @@ def get_firestore_client():
     else:
         raise KeyError("Firestore用の認証キーが見つかりません。")
 
+    # TOMLパース時の \n 文字列エスケープ補正
+    if "private_key" in key_dict and isinstance(key_dict["private_key"], str):
+        key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+
     creds = service_account.Credentials.from_service_account_info(key_dict)
     return firestore.Client(credentials=creds, project=key_dict["project_id"])
 
