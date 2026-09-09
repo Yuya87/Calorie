@@ -26,7 +26,13 @@ def init_firestore():
     """GCP Firestore クライアントの初期化"""
     try:
         if "gcp_service_account" in st.secrets:
-            key_dict = json.loads(st.secrets["gcp_service_account"])
+            secret_val = st.secrets["gcp_service_account"]
+            # dict/AttrDictか文字列かで処理を分岐
+            if isinstance(secret_val, str):
+                key_dict = json.loads(secret_val)
+            else:
+                key_dict = dict(secret_val)
+                
             creds = service_account.Credentials.from_service_account_info(key_dict)
             return firestore.Client(credentials=creds, project=key_dict.get("project_id"))
         else:
