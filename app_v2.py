@@ -37,6 +37,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Secrets 存在チェック（[gcp_service_account] または textkey の両方に対応）
+has_firestore_key = "textkey" in st.secrets or "gcp_service_account" in st.secrets
+has_gemini_key = "GEMINI_API_KEY" in st.secrets
+
+if not has_firestore_key or not has_gemini_key:
+    st.error("⚠️ Streamlit Community Cloudの Secrets が設定されていないか、キーが不足しています。")
+    st.info("""
+    **【設定手順】**
+    1. 画面右下の **Manage app** ＞ **Settings** ＞ **Secrets** を開きます。
+    2. `GEMINI_API_KEY` と、Firestore用サービスアカウントキー（`[gcp_service_account]` または `textkey`）を設定してください。
+    """)
+    st.stop()
+
 # ==========================================
 # 1. タイムゾーン & 初期化処理
 # ==========================================
@@ -53,7 +66,13 @@ def get_vn_today():
 # ==========================================
 @st.cache_resource
 def get_firestore_client():
-    key_dict = json.loads(st.secrets["textkey"])
+    if "textkey" in st.secrets:
+        key_dict = json.loads(st.secrets["textkey"])
+    elif "gcp_service_account" in st.secrets:
+        key_dict = dict(st.secrets["gcp_service_account"])
+    else:
+        raise KeyError("Firestore用の認証キーが見つかりません。")
+
     creds = service_account.Credentials.from_service_account_info(key_dict)
     return firestore.Client(credentials=creds, project=key_dict["project_id"])
 
