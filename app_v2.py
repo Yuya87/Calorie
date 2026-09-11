@@ -91,10 +91,35 @@ def fetch_daily_meals(selected_date_str):
         return []
     try:
         docs = db.collection("meals").where("date", "==", selected_date_str).get()
-        return [d.to_dict() for d in docs]
+        meals = []
+        for d in docs:
+            m = d.to_dict()
+            m["doc_id"] = d.id  # 編集・削除用にドキュメントIDを保存
+            meals.append(m)
+        return meals
     except Exception as e:
         st.error(f"食事データの取得エラー: {e}")
         return []
+
+def update_meal(doc_id, meal_data):
+    """食事レコードの更新"""
+    if db and doc_id:
+        try:
+            db.collection("meals").document(doc_id).update(meal_data)
+            return True
+        except Exception as e:
+            st.error(f"食事データの更新に失敗しました: {e}")
+    return False
+
+def delete_meal(doc_id):
+    """食事レコードの削除"""
+    if db and doc_id:
+        try:
+            db.collection("meals").document(doc_id).delete()
+            return True
+        except Exception as e:
+            st.error(f"食事データの削除に失敗しました: {e}")
+    return False
 
 def fetch_daily_exercises(selected_date_str):
     if not db:
@@ -341,27 +366,81 @@ with tab1:
             for idx, m in enumerate(exist_meals, 1):
                 out_info = f" 【外食: {m.get('restaurant_name', '')}】" if m.get("is_eating_out") else ""
                 meal_type = m.get("meal_type", "不明")
-                st.write(f"{idx}. [{meal_type}] **{m.get('food_name')}** - {m.get('calories')}kcal (P:{m.get('protein')}g F:{m.get('fat')}g C:{m.get('carbs')}g){out_info}")
+                
+                # アイテムのメイン情報表示と操作ボタンのレイアウト
+                col_info, col_edit, col_del = st.columns([6, 1.5, 1])
+                with col_info:
+                    st.write(f"**{idx}. [{meal_type}] {m.get('food_name')}** - {m.get('calories', 0)}kcal (P:{m.get('protein', 0)}g F:{m.get('fat', 0)}g C:{m.get('carbs', 0)}g){out_info}")
+                
+                # 削除ボタン
+                with col_del:
+                    if st.button("🗑️ 削除", key=f"del_meal_{m.get('doc_id')}"):
+                        if delete_meal(m.get("doc_id")):
+                            st.success("削除しました！")
+                            st.rerun()
 
-    with st.form("meal_ai_form"):
-        meal_text = st.text_area("食事内容（時間帯の指定がない場合は現在の時間からAIが推測します）", placeholder="例: 昼食に丸の内のうなぎ屋で特上うな重を食べた。")
-        is_out = st.checkbox("🍔 外食・会食として記録する")
-        
-        rest_name, partners, out_comment = "", "", ""
-        if is_out:
-            m_col1, m_col2 = st.columns(2)
-            rest_name = m_col1.text_input("店名・場所")
-            partners = m_col2.text_input("誰と（同行者）")
-            out_comment = st.text_input("外食に関するメモ・評価")
+                # 編集ボタン (ポップアップフォーム)
+                with col_edit:
+                    with st.popover("✏️ 編集"):
+                        st.markdown(f"**食事アイテムの編集**")
+                        edit_food = st.text_input("品目名", value=m.get("food_name", ""), key=f"ef_name_{m.get('doc_id')}")
+                        edit_type = st.selectbox("食事タイプ", ["朝食", "昼食", "夕食", "間食", "不明"], 
+                                                 index=["朝食", "昼食", "夕食", "間食", "不明"].index(m.get("meal_type", "不明")) if m.get("meal_type") in ["朝食", "昼食", "夕食", "間食", "不明"] else 4, 
+                                                 key=f"ef_type_{m.get('doc_id')}")
+                        
+                        ec1, ec2 = st.columns(2)
+                        edit_cal = ec1.number_input("カロリー (kcal)", value=float(m.get("calories", 0)), key=f"ef_cal_{m.get('doc_id')}")
+                        edit_p = ec2.number_input("タンパク質 P (g)", value=float(m.get("protein", 0)), key=f"ef_p_{m.get('doc_id')}")
+                        edit_f = ec1.number_input("脂質 F (g)", value=float(m.get("fat", 0)), key=f"ef_f_{m.get('doc_id')}")
+                        edit_c = ec2.number_input("炭水化物 C (g)", value=float(m.get("carbs", 0)), key=f"ef_c_{m.get('doc_id')}")
+                        
+                        edit_is_out = st.checkbox("🍔 外食・会食", value=bool(m.get("is_eating_out")), key=f"ef_isout_{m.get('doc_id')}")
+                        edit_rest, edit_part, edit_comment = m.get("restaurant_name", ""), m.get("dining_partners", ""), m.get("eating_out_comment", "")
+                        if edit_is_out:
+                            edit_rest = st.text_input("店名・場所", value=m.get("restaurant_name", ""), key=f"ef_rest_{m.get('doc_id')}")
+                            edit_part = st.text_input("同行者", value=m.get("dining_partners", ""), key=f"ef_part_{m.get('doc_id')}")
+                            edit_comment = st.text_input("外食メモ", value=m.get("eating_out_comment", ""), key=f"ef_comm_{m.get('doc_id')}")
 
-        if st.form_submit_button("AIで解析して食事を保存"):
-            if meal_text.strip():
-                with st.spinner("AIが栄養素を解析中..."):
-                    adv = parse_and_save_meal(meal_text, selected_date_str, is_out, rest_name, partners, out_comment)
-                    st.success(f"保存完了: {adv}")
-                    st.rerun()
-            else:
-                st.warning("食事内容を入力してください。")
+                        if st.button("更新を保存", key=f"save_edit_{m.get('doc_id')}"):
+                            updated_data = {
+                                "food_name": edit_food,
+                                "meal_type": edit_type,
+                                "calories": float(edit_cal),
+                                "protein": float(edit_p),
+                                "fat": float(edit_f),
+                                "carbs": float(edit_c),
+                                "is_eating_out": edit_is_out,
+                                "restaurant_name": edit_rest if edit_is_out else "",
+                                "dining_partners": edit_part if edit_is_out else "",
+                                "eating_out_comment": edit_comment if edit_is_out else ""
+                            }
+                            if update_meal(m.get("doc_id"), updated_data):
+                                st.success("更新しました！")
+                                st.rerun()
+
+    # AI食事入力フォーム
+    st.markdown("**🤖 新規食事の入力（AI解析）**")
+    meal_text = st.text_area("食事内容（時間帯の指定がない場合は現在の時間からAIが推測します）", placeholder="例: 昼食に丸の内のうなぎ屋で特上うな重を食べた。", key="meal_text_area")
+    
+    # リアルタイム（チェックボックスのON/OFF）で外食入力項目をその場に動的表示
+    is_out = st.checkbox("🍔 外食・会食として記録する", key="chk_is_out")
+    
+    rest_name, partners, out_comment = "", "", ""
+    if is_out:
+        st.markdown("##### 🍺 外食詳細情報")
+        m_col1, m_col2 = st.columns(2)
+        rest_name = m_col1.text_input("店名・場所", key="input_rest_name")
+        partners = m_col2.text_input("誰と（同行者）", key="input_partners")
+        out_comment = st.text_input("外食に関するメモ・評価", key="input_out_comment")
+
+    if st.button("AIで解析して食事を保存", type="primary"):
+        if meal_text.strip():
+            with st.spinner("AIが栄養素を解析中..."):
+                adv = parse_and_save_meal(meal_text, selected_date_str, is_out, rest_name, partners, out_comment)
+                st.success(f"保存完了: {adv}")
+                st.rerun()
+        else:
+            st.warning("食事内容を入力してください。")
 
     st.divider()
 
