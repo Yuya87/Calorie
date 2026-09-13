@@ -741,12 +741,12 @@ with tab2:
         st.caption("選択された日付の食事データはありません。")
 
 # ---------------------------------------------------------
-# TAB 3: 習慣 ＆ 体組成の分析 (配色・体重非表示改修)
+# TAB 3: 習慣 ＆ 体組成の分析 (グリッド間隔調整・体重非表示改修)
 # ---------------------------------------------------------
 with tab3:
     st.subheader("📈 習慣 ＆ 体組成データの分析")
     
-    # --- 1. 習慣達成マトリクス (ヒートマップ配色変更) ---
+    # --- 1. 習慣達成マトリクス (xgap/ygapでマスの間隔・可視性を向上) ---
     st.markdown("### 🗓️ 過去30日間の習慣達成マトリクス（色分け一覧）")
     
     end_date = date.today()
@@ -776,7 +776,7 @@ with tab3:
         matrix_data.append(row_scores)
         text_matrix.append(row_texts)
         
-    # ご指定のカラーパレット (未記録: 薄いグレー, 未実施: 薄い青, 一応やった: 少し濃い青, 目標達成: 普通の青)
+    # カラーパレット (未記録: 薄いグレー, 未実施: 薄い青, 一応やった: 少し濃い青, 目標達成: 普通の青)
     colorscale = [
         [0.0, "#f3f4f6"],  # 未記録 (極薄グレー)
         [0.33, "#93c5fd"], # 未実施 (薄い青)
@@ -784,6 +784,7 @@ with tab3:
         [1.0, "#1d4ed8"]   # 目標達成 (普通の青)
     ]
     
+    # xgap, ygap を追加して各マス目と軸との区切りを強調
     fig_heatmap = px.imshow(
         matrix_data,
         x=date_list,
@@ -794,11 +795,16 @@ with tab3:
         title="過去30日間の習慣達成結果"
     )
     fig_heatmap.update_traces(
+        xgap=4,
+        ygap=4,
         hovertemplate="%{customdata}<extra></extra>",
         customdata=text_matrix
     )
     fig_heatmap.update_coloraxes(showscale=False)
     fig_heatmap.update_xaxes(side="bottom", tickangle=-45)
+    fig_heatmap.update_layout(
+        margin=dict(l=60, r=20, t=50, b=60)
+    )
     st.plotly_chart(fig_heatmap, use_container_width=True)
 
     st.divider()
@@ -841,7 +847,7 @@ with tab3:
         st.info("体組成データがまだ登録されていません。「本日のデータ入力」タブからCSVをアップロードしてください。")
 
 # ---------------------------------------------------------
-# TAB 4: 過去1週間の推移 (新規追加タブ)
+# TAB 4: 過去1週間の推移 (PFCグラフの個体分離改修)
 # ---------------------------------------------------------
 with tab4:
     st.subheader("📊 過去1週間の栄養摂取推移 (カロリー ＆ PFC)")
@@ -893,23 +899,65 @@ with tab4:
     
     st.divider()
     
-    # 2. PFCバランス推移（積み上げバーチャート）
-    df_pfc = df_7d.melt(id_vars=["date"], value_vars=["protein", "fat", "carbs"], 
-                        var_name="macro", value_name="grams")
+    # 2. PFCそれぞれ独立した推移バーチャート
+    st.markdown("### 🥗 PFC別 摂取量推移")
     
-    macro_names = {"protein": "P (タンパク質)", "fat": "F (脂質)", "carbs": "C (炭水化物)"}
-    df_pfc["macro"] = df_pfc["macro"].map(macro_names)
-    
-    fig_pfc = px.bar(
-        df_pfc,
+    # P (タンパク質) グラフ
+    fig_p = px.bar(
+        df_7d,
         x="date",
-        y="grams",
-        color="macro",
-        title="過去7日間の PFC 摂取量推移 (g)",
-        labels={"date": "日付", "grams": "摂取量 (g)", "macro": "三大栄養素"},
-        barmode="stack"
+        y="protein",
+        text_auto=".1f",
+        title="過去7日間の P (タンパク質) 摂取量推移 (g)",
+        labels={"date": "日付", "protein": "タンパク質 (g)"},
+        color_discrete_sequence=["#3b82f6"]
     )
-    st.plotly_chart(fig_pfc, use_container_width=True)
+    fig_p.add_hline(
+        y=goals.get("target_p", 160),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標 P ({int(goals.get('target_p', 160))} g)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_p, use_container_width=True)
+    
+    # F (脂質) グラフ
+    fig_f = px.bar(
+        df_7d,
+        x="date",
+        y="fat",
+        text_auto=".1f",
+        title="過去7日間の F (脂質) 摂取量推移 (g)",
+        labels={"date": "日付", "fat": "脂質 (g)"},
+        color_discrete_sequence=["#f59e0b"]
+    )
+    fig_f.add_hline(
+        y=goals.get("target_f", 50),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標 F ({int(goals.get('target_f', 50))} g)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_f, use_container_width=True)
+    
+    # C (炭水化物) グラフ
+    fig_c = px.bar(
+        df_7d,
+        x="date",
+        y="carbs",
+        text_auto=".1f",
+        title="過去7日間の C (炭水化物) 摂取量推移 (g)",
+        labels={"date": "日付", "carbs": "炭水化物 (g)"},
+        color_discrete_sequence=["#10b981"]
+    )
+    fig_c.add_hline(
+        y=goals.get("target_c", 250),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標 C ({int(goals.get('target_c', 250))} g)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_c, use_container_width=True)
 
 # ---------------------------------------------------------
 # TAB 5: 設定
