@@ -428,9 +428,18 @@ with tab1:
     def get_habit_idx(val):
         return habit_options.index(val) if val in habit_options else 3
 
-    # メモ状態の管理（StreamlitWidgetAlreadyInstantiatedError 回避）
-    if "h_memo_input" not in st.session_state:
-        st.session_state["h_memo_input"] = exist_habit.get("memo", "")
+    # コールバック関数: フォーム送信時に安全にDB保存と状態更新を実行
+    def save_habit_callback(date_str):
+        gym_v = st.session_state.get("h_radio_gym", "未記録")
+        eng_v = st.session_state.get("h_radio_eng", "未記録")
+        rest_v = st.session_state.get("h_radio_rest", "未記録")
+        memo_v = st.session_state.get("h_memo_field", "")
+        save_daily_habit(date_str, gym_v, eng_v, rest_v, memo_v)
+        st.session_state["habit_saved_msg"] = True
+
+    if "habit_saved_msg" in st.session_state and st.session_state["habit_saved_msg"]:
+        st.success("習慣化データを保存しました。")
+        st.session_state["habit_saved_msg"] = False
 
     with st.form("habit_input_form"):
         st.write("各習慣の達成状況を選択してください（1クリックで入力可能）:")
@@ -444,14 +453,7 @@ with tab1:
             
         h_memo = st.text_input("習慣メモ", value=exist_habit.get("memo", ""), placeholder="例: 脚トレ実施 / 瞬間英作文20分", key="h_memo_field")
         
-        if st.form_submit_button("習慣化データを保存"):
-            save_daily_habit(selected_date_str, gym_val, eng_val, rest_val, h_memo)
-            if "h_memo_input" in st.session_state:
-                st.session_state["h_memo_input"] = ""
-            if "h_memo_field" in st.session_state:
-                st.session_state["h_memo_field"] = ""
-            st.success("習慣化データを保存しました。")
-            st.rerun()
+        st.form_submit_button("習慣化データを保存", on_click=save_habit_callback, args=(selected_date_str,))
 
     st.divider()
 
@@ -748,12 +750,12 @@ with tab2:
         st.caption("選択された日付の食事データはありません。")
 
 # ---------------------------------------------------------
-# TAB 3: 習慣 ＆ 体組成の分析 (グリッド間隔調整・体重非表示改修)
+# TAB 3: 習慣 ＆ 体組成の分析
 # ---------------------------------------------------------
 with tab3:
     st.subheader("📈 習慣 ＆ 体組成データの分析")
     
-    # --- 1. 習慣達成マトリクス (xgap/ygapでマスの間隔・可視性を向上) ---
+    # --- 1. 習慣達成マトリクス ---
     st.markdown("### 🗓️ 過去30日間の習慣達成マトリクス（色分け一覧）")
     
     end_date = date.today()
@@ -783,15 +785,13 @@ with tab3:
         matrix_data.append(row_scores)
         text_matrix.append(row_texts)
         
-    # カラーパレット (未記録: 薄いグレー, 未実施: 薄い青, 一応やった: 少し濃い青, 目標達成: 普通の青)
     colorscale = [
-        [0.0, "#f3f4f6"],  # 未記録 (極薄グレー)
-        [0.33, "#93c5fd"], # 未実施 (薄い青)
-        [0.66, "#3b82f6"], # 一応やった (やや濃い青)
-        [1.0, "#1d4ed8"]   # 目標達成 (普通の青)
+        [0.0, "#f3f4f6"],  # 未記録
+        [0.33, "#93c5fd"], # 未実施
+        [0.66, "#3b82f6"], # 一応やった
+        [1.0, "#1d4ed8"]   # 目標達成
     ]
     
-    # xgap, ygap を追加して各マス目と軸との区切りを強調
     fig_heatmap = px.imshow(
         matrix_data,
         x=date_list,
@@ -828,7 +828,6 @@ with tab3:
         if 'weight' in df_body.columns and 'body_fat' in df_body.columns:
             df_body['fat_mass'] = df_body['weight'] * (df_body['body_fat'] / 100.0)
             
-        # 体重(weight)を除外し、3指標で描画
         fig_body = px.line(
             df_body,
             x='date',
@@ -854,7 +853,7 @@ with tab3:
         st.info("体組成データがまだ登録されていません。「本日のデータ入力」タブからCSVをアップロードしてください。")
 
 # ---------------------------------------------------------
-# TAB 4: 過去1週間の推移 (PFCグラフの個体分離改修)
+# TAB 4: 過去1週間の推移
 # ---------------------------------------------------------
 with tab4:
     st.subheader("📊 過去1週間の栄養摂取推移 (カロリー ＆ PFC)")
@@ -865,7 +864,6 @@ with tab4:
     dates_7d = [(start_7d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
     meals_7d = fetch_meals_range(start_7d.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
     
-    # 日付ごとの集計
     daily_summary = []
     goals = fetch_user_goals()
     
@@ -886,7 +884,6 @@ with tab4:
         
     df_7d = pd.DataFrame(daily_summary)
     
-    # 1. カロリー推移バーチャート
     fig_cal = px.bar(
         df_7d,
         x="date",
@@ -906,10 +903,8 @@ with tab4:
     
     st.divider()
     
-    # 2. PFCそれぞれ独立した推移バーチャート
     st.markdown("### 🥗 PFC別 摂取量推移")
     
-    # P (タンパク質) グラフ
     fig_p = px.bar(
         df_7d,
         x="date",
@@ -928,7 +923,6 @@ with tab4:
     )
     st.plotly_chart(fig_p, use_container_width=True)
     
-    # F (脂質) グラフ
     fig_f = px.bar(
         df_7d,
         x="date",
@@ -947,7 +941,6 @@ with tab4:
     )
     st.plotly_chart(fig_f, use_container_width=True)
     
-    # C (炭水化物) グラフ
     fig_c = px.bar(
         df_7d,
         x="date",
