@@ -23,6 +23,9 @@ st.set_page_config(
 @st.cache_resource
 def init_firestore():
     key_dict = dict(st.secrets["gcp_service_account"])
+    # private_key の改行コード (\\n) を正しい改行 (\n) に変換
+    if "private_key" in key_dict:
+        key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
     credentials = service_account.Credentials.from_service_account_info(key_dict)
     return firestore.Client(credentials=credentials, project=key_dict["project_id"])
 
