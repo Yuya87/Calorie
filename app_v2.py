@@ -23,7 +23,7 @@ st.set_page_config(
 @st.cache_resource
 def init_firestore():
     key_dict = dict(st.secrets["gcp_service_account"])
-    # Secretsから読み込む際に改行コードがエスケープされている場合があるため置換
+    # Secrets読み込み時の改行コードエスケープを補正
     if "private_key" in key_dict:
         key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
     credentials = service_account.Credentials.from_service_account_info(key_dict)
@@ -182,7 +182,7 @@ def generate_journal_feedback(note, meals, exercises, habits):
 
     【本日のデータ】
     - 振り返りメモ: {note}
-    - 習慣ステータス: ジム/運動={habits.get('gym')}, 英語={habits.get('english')}, 休肝日={habits.get('rest_day')}
+    - 習慣ステータス: 運動={habits.get('gym')}, 英語学習={habits.get('english')}, 休肝日={habits.get('rest_day')}
     - 食事件数: {len(meals)}件
     - 運動件数: {len(exercises)}件
 
@@ -231,7 +231,7 @@ with tab1:
     selected_date = st.date_input("記録対象日", date.today())
     target_date_str = selected_date.strftime("%Y-%m-%d")
 
-    st.subheader("🏋️ 1. 日次習慣化チェックイン")
+    st.subheader("🏋️ 1. 習慣化チェックイン")
     current_habits = get_daily_habits(target_date_str)
     
     habit_options = ["未記録", "目標達成", "一応やった", "未実施"]
@@ -434,9 +434,8 @@ with tab2:
 # TAB 3: 📈 習慣＆体組成の分析
 # =========================================================
 with tab3:
-    st.subheader("📈 過去30日間の習慣達成率")
+    st.subheader("📈 過去30日間の習慣達成内訳")
     
-    # 過去30日間の日付リスト作成
     end_d = date.today()
     start_d = end_d - timedelta(days=29)
     date_list = [(start_d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
@@ -452,8 +451,6 @@ with tab3:
         })
     
     df_habits = pd.DataFrame(habits_data)
-    
-    # メルトしてPlotlyで描画
     df_melted = df_habits.melt(id_vars=["date"], var_name="habit_type", value_name="status")
     
     fig_habit = px.bar(
@@ -474,7 +471,6 @@ with tab3:
     st.divider()
     st.subheader("🥗 過去7日間の栄養・PFC摂取量推移")
 
-    # 過去7日間の日付リスト
     start_7d = end_d - timedelta(days=6)
     date_list_7d = [(start_7d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
@@ -490,7 +486,6 @@ with tab3:
         })
     df_pfc = pd.DataFrame(pfc_data)
 
-    # 1. カロリー推移グラフ
     fig_cal = px.bar(
         df_pfc, 
         x="date", 
@@ -507,7 +502,6 @@ with tab3:
     )
     st.plotly_chart(fig_cal, use_container_width=True)
 
-    # 2. PFC個別の推移グラフ (3列表示)
     col_p, col_f, col_c = st.columns(3)
 
     with col_p:
@@ -564,21 +558,25 @@ with tab3:
     st.divider()
     st.subheader("⚖️ 体組成推移")
     
-    # 体組成データ取得
     body_docs = db.collection("body_composition").order_by("date").get()
     if body_docs:
         body_list = [d.to_dict() for d in body_docs]
         df_body = pd.DataFrame(body_list)
         
-        fig_weight = px.line(
-            df_body, 
-            x="date", 
-            y=["weight", "muscle_mass"], 
-            markers=True,
-            title="体重・骨格筋量推移 (kg)",
-            labels={"value": "kg", "variable": "項目"}
-        )
-        st.plotly_chart(fig_weight, use_container_width=True)
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            fig_w = px.line(df_body, x="date", y="weight", markers=True, title="体重推移 (kg)", labels={"weight": "体重 (kg)", "date": "日付"})
+            st.plotly_chart(fig_w, use_container_width=True)
+            
+            fig_m = px.line(df_body, x="date", y="muscle_mass", markers=True, title="骨格筋量推移 (kg)", labels={"muscle_mass": "骨格筋量 (kg)", "date": "日付"})
+            st.plotly_chart(fig_m, use_container_width=True)
+            
+        with col_b2:
+            fig_fat = px.line(df_body, x="date", y="body_fat", markers=True, title="体脂肪率推移 (%)", labels={"body_fat": "体脂肪率 (%)", "date": "日付"})
+            st.plotly_chart(fig_fat, use_container_width=True)
+            
+            fig_bmr = px.line(df_body, x="date", y="bmr", markers=True, title="基礎代謝推移 (kcal)", labels={"bmr": "基礎代謝 (kcal)", "date": "日付"})
+            st.plotly_chart(fig_bmr, use_container_width=True)
     else:
         st.info("体組成データがまだ登録されていません。TAB 1からCSVをアップロードしてください。")
 
