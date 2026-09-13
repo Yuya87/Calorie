@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timedelta, date
 from google.oauth2 import service_account
 from google.cloud import firestore
@@ -31,7 +32,6 @@ def format_date_with_weekday(d_val):
 # 食事ソート用ロジック（朝食 -> 昼食 -> 夕食 -> 間食 -> 不明）
 MEAL_ORDER_MAP = {"朝食": 0, "昼食": 1, "夕食": 2, "間食": 3, "不明": 4}
 def sort_meals(meal_list):
-    # Pythonのsortは安定ソートのため、登録順（リストの元の順序）を維持しつつmeal_typeでソートされる
     return sorted(meal_list, key=lambda x: MEAL_ORDER_MAP.get(x.get("meal_type", "不明"), 4))
 
 # ---------------------------------------------------------
@@ -39,7 +39,7 @@ def sort_meals(meal_list):
 # ---------------------------------------------------------
 @st.cache_resource
 def init_firestore():
-    """GCP Firestore クライアントの初期化（堅牢化）"""
+    """GCP Firestore クライアントの初期化"""
     try:
         if "gcp_service_account" in st.secrets:
             secret_val = st.secrets["gcp_service_account"]
@@ -101,7 +101,6 @@ def save_user_goals(cal, p, f, c):
         })
 
 def fetch_user_rules():
-    """旧app.py時代の辞書登録ルール (user_rules) を取得"""
     if not db:
         return []
     try:
@@ -116,7 +115,6 @@ def fetch_user_rules():
         return []
 
 def save_user_rule(title, detail):
-    """辞書ルールを新規保存"""
     if db and title and detail:
         db.collection("user_rules").add({
             "title": title,
@@ -125,7 +123,6 @@ def save_user_rule(title, detail):
         })
 
 def delete_user_rule(doc_id):
-    """辞書ルールを削除"""
     if db and doc_id:
         db.collection("user_rules").document(doc_id).delete()
 
@@ -142,6 +139,19 @@ def fetch_daily_meals(selected_date_str):
         return meals
     except Exception as e:
         st.error(f"食事データの取得エラー: {e}")
+        return []
+
+def fetch_meals_range(start_date_str, end_date_str):
+    """指定した日付範囲の食事データを一括取得"""
+    if not db:
+        return []
+    try:
+        docs = db.collection("meals")\
+            .where("date", ">=", start_date_str)\
+            .where("date", "<=", end_date_str).get()
+        return [d.to_dict() for d in docs]
+    except Exception as e:
+        st.error(f"期間食事データの取得エラー: {e}")
         return []
 
 def update_meal(doc_id, meal_data):
@@ -182,7 +192,6 @@ def fetch_body_comp(selected_date_str):
         return None
 
 def fetch_all_body_comp():
-    """全期間の体組成データを取得"""
     if not db:
         return []
     try:
@@ -246,7 +255,6 @@ def fetch_habits_range(start_date_str, end_date_str):
 # 4. AI解析ロジック (Gemini 3.6 Flash)
 # ---------------------------------------------------------
 def generate_journal_feedback(note):
-    """ジャーナルに対するGeminiのフィードバック生成"""
     if not ai_client or not note.strip():
         return ""
     prompt = f"""
@@ -269,7 +277,6 @@ def parse_and_save_meal(user_text, target_date_str, is_eating_out=False, restaur
     if not ai_client:
         return "AIクライアントが初期化されていません。GEMINI_API_KEYを確認してください。"
 
-    # 単語辞書（ユーザー定義ルール）を優先適用するために取得しプロンプトへ注入
     rules = fetch_user_rules()
     rules_text = ""
     if rules:
@@ -388,10 +395,11 @@ with st.sidebar:
             st.success("目標を更新しました！")
 
 # タブ定義
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📝 本日のデータ入力", 
     "📊 日次サマリー＆KPI", 
     "📈 習慣＆体組成の分析", 
+    "📊 過去1週間の推移",
     "⚙️ 設定"
 ])
 
@@ -413,7 +421,7 @@ with tab1:
 
     st.divider()
 
-    # 1. 習慣化チェックイン (ラジオボタン化・保存完了メッセージ追加)
+    # 1. 習慣化チェックイン
     st.subheader("🏋️ 1. 習慣化チェックイン")
     habit_options = ["目標達成", "一応やった", "未実施", "未記録"]
 
@@ -434,16 +442,15 @@ with tab1:
         
         if st.form_submit_button("習慣化データを保存"):
             save_daily_habit(selected_date_str, gym_val, eng_val, rest_val, h_memo)
-            st.session_state["h_memo_input"] = ""  # 保存後自由入力クリア
+            st.session_state["h_memo_input"] = ""
             st.success("習慣化データを保存しました。")
             st.rerun()
 
     st.divider()
 
-    # 2. 食事ログ入力（入力領域 -> 登録情報の順序変更、動的表示フラグ対応、辞書機能追加）
+    # 2. 食事ログ入力
     st.subheader("🥗 2. 食事ログの入力")
     
-    # 辞書登録のアコーディオン
     with st.expander("📖 単語辞書（カスタム栄養定義）の確認・追加"):
         user_rules = fetch_user_rules()
         if user_rules:
@@ -472,7 +479,6 @@ with tab1:
 
     meal_text = st.text_area("食事内容（時間帯の指定がない場合は現在の時間からAIが推測します）", value=st.session_state["meal_text_val"], placeholder="例: 昼食に丸の内のうなぎ屋で特上うな重を食べた。", key="meal_text_area")
     
-    # 外食チェックボックス（クリックで動的に表示）
     is_out = st.checkbox("🍔 外食・会食として記録する", key="chk_is_out")
     
     rest_name, partners, out_comment = "", "", ""
@@ -487,7 +493,7 @@ with tab1:
         if meal_text.strip():
             with st.spinner("AIが栄養素を解析中..."):
                 adv = parse_and_save_meal(meal_text, selected_date_str, is_out, rest_name, partners, out_comment)
-                st.session_state["meal_text_val"] = ""  # 保存後自由入力クリア
+                st.session_state["meal_text_val"] = ""
                 st.session_state["input_rest_name"] = ""
                 st.session_state["input_partners"] = ""
                 st.session_state["input_out_comment"] = ""
@@ -496,7 +502,6 @@ with tab1:
         else:
             st.warning("食事内容を入力してください。")
 
-    # 入力領域の下に登録済みの食事一覧を表示
     if exist_meals:
         with st.expander(f"📋 登録済みの食事 ({len(exist_meals)} 件) ※朝食・昼食・夕食順", expanded=True):
             for idx, m in enumerate(exist_meals, 1):
@@ -507,7 +512,7 @@ with tab1:
 
     st.divider()
 
-    # 3. 運動ログ入力（入力領域 -> 登録情報の順序変更）
+    # 3. 運動ログ入力
     st.subheader("🏃 3. 運動ログの入力")
 
     st.markdown("**🔥 傾斜ウォーキングのワンタップ記録**")
@@ -540,13 +545,12 @@ with tab1:
             if ex_text.strip():
                 with st.spinner("AIが消費カロリーを解析中..."):
                     adv = parse_and_save_exercise(ex_text, selected_date_str)
-                    st.session_state["ex_text_val"] = ""  # 入力クリア
+                    st.session_state["ex_text_val"] = ""
                     st.success(f"保存完了: {adv}")
                     st.rerun()
             else:
                 st.warning("運動内容を入力してください。")
 
-    # 入力領域の下に登録済みの運動一覧を表示
     if exist_exercises:
         with st.expander(f"📋 登録済みの運動 ({len(exist_exercises)} 件)", expanded=True):
             for idx, e in enumerate(exist_exercises, 1):
@@ -554,7 +558,7 @@ with tab1:
 
     st.divider()
 
-    # 4. ジャーナリング入力（フィードバック表示消滅バグ修正 ＆ 入力クリア）
+    # 4. ジャーナリング入力
     st.subheader("📖 4. 本日のジャーナリング（振り返り）")
     if "j_note_val" not in st.session_state:
         st.session_state["j_note_val"] = exist_journal.get("note", "") if exist_journal else ""
@@ -570,7 +574,7 @@ with tab1:
                 with st.spinner("Geminiがフィードバックを生成中..."):
                     fb = generate_journal_feedback(j_note)
                     save_journal(selected_date_str, j_note, fb)
-                    st.session_state["j_note_val"] = ""  # クリア
+                    st.session_state["j_note_val"] = ""
                     st.success("ジャーナルとAIフィードバックを保存しました！")
                     st.rerun()
             else:
@@ -578,7 +582,6 @@ with tab1:
                 st.success("ジャーナルをクリアしました。")
                 st.rerun()
 
-    # 永続保存されているAIフィードバックの常時表示
     if exist_journal and exist_journal.get("note"):
         st.markdown(f"**📝 登録済みの振り返り ({format_date_with_weekday(selected_date_str)})**: {exist_journal.get('note')}")
         if exist_journal.get("ai_feedback"):
@@ -595,7 +598,6 @@ with tab1:
         if st.button("CSVデータをインポート"):
             try:
                 df = pd.read_csv(uploaded_file)
-                # タニタ・オムロン カラム名マッピング対応
                 date_col = [c for c in df.columns if "測定" in c or "日付" in c or "date" in c.lower()]
                 weight_col = [c for c in df.columns if "体重" in c or "weight" in c.lower()]
                 fat_col = [c for c in df.columns if "体脂肪" in c or "fat" in c.lower()]
@@ -637,43 +639,48 @@ with tab1:
                 st.error(f"インポート処理中にエラーが発生しました: {e}")
 
 # ---------------------------------------------------------
-# TAB 2: 日次サマリー ＆ KPI (閲覧・編集・削除)
+# TAB 2: 日次サマリー ＆ KPI (日付選択機能付き)
 # ---------------------------------------------------------
 with tab2:
-    st.subheader(f"📊 日次サマリー ({format_date_with_weekday(selected_date_str)})")
+    st.subheader("📊 日次サマリー ＆ 該当日の明細")
     
-    meals = sort_meals(fetch_daily_meals(selected_date_str))
-    exercises = fetch_daily_exercises(selected_date_str)
+    # 選択日付切り替え機能
+    tab2_selected_date = st.date_input("表示する日付を選択", selected_date, key="summary_date_picker")
+    tab2_selected_date_str = tab2_selected_date.strftime("%Y-%m-%d")
+    
+    st.markdown(f"#### 対象日: `{format_date_with_weekday(tab2_selected_date)}`")
+    
+    meals_summary = sort_meals(fetch_daily_meals(tab2_selected_date_str))
+    exercises_summary = fetch_daily_exercises(tab2_selected_date_str)
     goals = fetch_user_goals()
-    habit = fetch_daily_habit(selected_date_str)
+    habit_summary = fetch_daily_habit(tab2_selected_date_str)
     
-    tot_cal = sum(m.get("calories", 0) for m in meals)
-    tot_p = sum(m.get("protein", 0) for m in meals)
-    tot_f = sum(m.get("fat", 0) for m in meals)
-    tot_c = sum(m.get("carbs", 0) for m in meals)
-    tot_burn = sum(e.get("burned_calories", 0) for e in exercises)
+    tot_cal = sum(m.get("calories", 0) for m in meals_summary)
+    tot_p = sum(m.get("protein", 0) for m in meals_summary)
+    tot_f = sum(m.get("fat", 0) for m in meals_summary)
+    tot_c = sum(m.get("carbs", 0) for m in meals_summary)
+    tot_burn = sum(e.get("burned_calories", 0) for e in exercises_summary)
     
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("カロリー", f"{int(tot_cal)} kcal", f"{int(tot_cal - goals['target_cal'])} kcal")
     col2.metric("P (タンパク質)", f"{tot_p:.1f} g", f"{tot_p - goals['target_p']:.1f} g")
     col3.metric("F (脂質)", f"{tot_f:.1f} g", f"{tot_f - goals['target_f']:.1f} g")
     col4.metric("C (炭水化物)", f"{tot_c:.1f} g", f"{tot_c - goals['target_c']:.1f} g")
-    col5.metric("運動消費", f"{int(tot_burn)} kcal", f"{len(exercises)} 件")
+    col5.metric("運動消費", f"{int(tot_burn)} kcal", f"{len(exercises_summary)} 件")
 
     st.divider()
 
-    st.markdown("##### 🏋️ 本日の習慣達成ステータス")
+    st.markdown("##### 🏋️ 選択日の習慣達成ステータス")
     hc1, hc2, hc3 = st.columns(3)
-    hc1.info(f"**運動**: {habit.get('gym', '未記録')}")
-    hc2.info(f"**英語学習**: {habit.get('english', '未記録')}")
-    hc3.info(f"**休肝日**: {habit.get('rest_day', '未記録')}")
+    hc1.info(f"**運動**: {habit_summary.get('gym', '未記録')}")
+    hc2.info(f"**英語学習**: {habit_summary.get('english', '未記録')}")
+    hc3.info(f"**休肝日**: {habit_summary.get('rest_day', '未記録')}")
 
     st.divider()
 
-    # 食事明細リスト（朝・昼・夕の順序、編集・削除ボタンをここに配置）
     st.markdown("##### 🥗 食事明細＆外食記録（朝食・昼食・夕食順）")
-    if meals:
-        for idx, m in enumerate(meals, 1):
+    if meals_summary:
+        for idx, m in enumerate(meals_summary, 1):
             m_type = m.get("meal_type", "不明")
             
             with st.container():
@@ -686,14 +693,12 @@ with tab2:
                     else:
                         st.write(f"🍽️ **{idx}. [{m_type}] {m.get('food_name')}** - {m.get('calories')} kcal (P:{m.get('protein')}g, F:{m.get('fat')}g, C:{m.get('carbs')}g)")
                 
-                # 削除ボタン
                 with col_del:
                     if st.button("🗑️ 削除", key=f"del_meal_tab2_{m.get('doc_id')}"):
                         if delete_meal(m.get("doc_id")):
                             st.success("削除しました！")
                             st.rerun()
 
-                # 編集ボタン (ポップアップ)
                 with col_edit:
                     with st.popover("✏️ 編集"):
                         st.markdown(f"**食事アイテムの編集**")
@@ -733,29 +738,27 @@ with tab2:
                                 st.rerun()
                 st.divider()
     else:
-        st.caption("食事データはありません。")
+        st.caption("選択された日付の食事データはありません。")
 
 # ---------------------------------------------------------
-# TAB 3: 習慣 ＆ 体組成の分析
+# TAB 3: 習慣 ＆ 体組成の分析 (配色・体重非表示改修)
 # ---------------------------------------------------------
 with tab3:
     st.subheader("📈 習慣 ＆ 体組成データの分析")
     
-    # --- 1. 習慣達成マトリクス (ヒートマップ化) ---
+    # --- 1. 習慣達成マトリクス (ヒートマップ配色変更) ---
     st.markdown("### 🗓️ 過去30日間の習慣達成マトリクス（色分け一覧）")
     
     end_date = date.today()
     start_30d = end_date - timedelta(days=29)
     habits_30d = fetch_habits_range(start_30d.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
     
-    # 30日間の完全な日付リストを作成
     date_list = [(start_30d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
     habit_dict = {h.get("date"): h for h in habits_30d}
     
     items = ["運動", "英語学習", "休肝日"]
     item_keys = {"運動": "gym", "英語学習": "english", "休肝日": "rest_day"}
     
-    # ステータス数値化 (0:未記録, 1:未実施, 2:一応やった, 3:目標達成)
     score_map = {"未記録": 0, "未実施": 1, "一応やった": 2, "目標達成": 3}
     
     matrix_data = []
@@ -773,12 +776,12 @@ with tab3:
         matrix_data.append(row_scores)
         text_matrix.append(row_texts)
         
-    # ヒートマップ描画 (Plotly)
+    # ご指定のカラーパレット (未記録: 薄いグレー, 未実施: 薄い青, 一応やった: 少し濃い青, 目標達成: 普通の青)
     colorscale = [
-        [0.0, "#e5e7eb"],  # 未記録 (灰)
-        [0.33, "#ef4444"], # 未実施 (赤)
-        [0.66, "#f59e0b"], # 一応やった (黄)
-        [1.0, "#10b981"]   # 目標達成 (緑)
+        [0.0, "#f3f4f6"],  # 未記録 (極薄グレー)
+        [0.33, "#93c5fd"], # 未実施 (薄い青)
+        [0.66, "#3b82f6"], # 一応やった (やや濃い青)
+        [1.0, "#1d4ed8"]   # 目標達成 (普通の青)
     ]
     
     fig_heatmap = px.imshow(
@@ -788,7 +791,7 @@ with tab3:
         color_continuous_scale=colorscale,
         range_color=[0, 3],
         aspect="auto",
-        title="過去30日間の習慣達成結果 (緑:目標達成 / 黄:一応やった / 赤:未実施 / 灰:未記録)"
+        title="過去30日間の習慣達成結果"
     )
     fig_heatmap.update_traces(
         hovertemplate="%{customdata}<extra></extra>",
@@ -800,8 +803,8 @@ with tab3:
 
     st.divider()
 
-    # --- 2. 体組成データの推移グラフ ---
-    st.markdown("### ⚖️ 体組成データの推移 (体重・体脂肪率・体脂肪量・骨格筋量)")
+    # --- 2. 体組成データの推移グラフ (体重非表示化) ---
+    st.markdown("### ⚖️ 体組成データの推移 (体脂肪率・体脂肪量・骨格筋量)")
     all_body_data = fetch_all_body_comp()
     
     if all_body_data:
@@ -809,26 +812,24 @@ with tab3:
         df_body['date_dt'] = pd.to_datetime(df_body['date'])
         df_body = df_body.sort_values('date_dt')
         
-        # 体脂肪量 (kg) の計算
         if 'weight' in df_body.columns and 'body_fat' in df_body.columns:
             df_body['fat_mass'] = df_body['weight'] * (df_body['body_fat'] / 100.0)
             
+        # 体重(weight)を除外し、3指標で描画
         fig_body = px.line(
             df_body,
             x='date',
-            y=['weight', 'body_fat', 'fat_mass', 'muscle_mass'],
+            y=['body_fat', 'fat_mass', 'muscle_mass'],
             labels={
                 'date': '日付',
                 'value': '測定値',
                 'variable': '指標'
             },
-            title="体組成データの経時変化",
+            title="体組成データの経時変化 (※体重非表示)",
             markers=True
         )
         
-        # 凡例の名前を日本語化
         new_names = {
-            'weight': '体重 (kg)',
             'body_fat': '体脂肪率 (%)',
             'fat_mass': '体脂肪量 (kg)',
             'muscle_mass': '骨格筋量 (kg)'
@@ -840,8 +841,79 @@ with tab3:
         st.info("体組成データがまだ登録されていません。「本日のデータ入力」タブからCSVをアップロードしてください。")
 
 # ---------------------------------------------------------
-# TAB 4: 設定
+# TAB 4: 過去1週間の推移 (新規追加タブ)
 # ---------------------------------------------------------
 with tab4:
+    st.subheader("📊 過去1週間の栄養摂取推移 (カロリー ＆ PFC)")
+    
+    today = date.today()
+    start_7d = today - timedelta(days=6)
+    
+    dates_7d = [(start_7d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    meals_7d = fetch_meals_range(start_7d.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
+    
+    # 日付ごとの集計
+    daily_summary = []
+    goals = fetch_user_goals()
+    
+    for d_str in dates_7d:
+        day_meals = [m for m in meals_7d if m.get("date") == d_str]
+        c_sum = sum(m.get("calories", 0) for m in day_meals)
+        p_sum = sum(m.get("protein", 0) for m in day_meals)
+        f_sum = sum(m.get("fat", 0) for m in day_meals)
+        cb_sum = sum(m.get("carbs", 0) for m in day_meals)
+        
+        daily_summary.append({
+            "date": d_str,
+            "calories": c_sum,
+            "protein": p_sum,
+            "fat": f_sum,
+            "carbs": cb_sum
+        })
+        
+    df_7d = pd.DataFrame(daily_summary)
+    
+    # 1. カロリー推移バーチャート
+    fig_cal = px.bar(
+        df_7d,
+        x="date",
+        y="calories",
+        text_auto=".0f",
+        title="過去7日間の合計摂取カロリー推移",
+        labels={"date": "日付", "calories": "摂取カロリー (kcal)"}
+    )
+    fig_cal.add_hline(
+        y=goals.get("target_cal", 2200),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標カロリー ({int(goals.get('target_cal', 2200))} kcal)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_cal, use_container_width=True)
+    
+    st.divider()
+    
+    # 2. PFCバランス推移（積み上げバーチャート）
+    df_pfc = df_7d.melt(id_vars=["date"], value_vars=["protein", "fat", "carbs"], 
+                        var_name="macro", value_name="grams")
+    
+    macro_names = {"protein": "P (タンパク質)", "fat": "F (脂質)", "carbs": "C (炭水化物)"}
+    df_pfc["macro"] = df_pfc["macro"].map(macro_names)
+    
+    fig_pfc = px.bar(
+        df_pfc,
+        x="date",
+        y="grams",
+        color="macro",
+        title="過去7日間の PFC 摂取量推移 (g)",
+        labels={"date": "日付", "grams": "摂取量 (g)", "macro": "三大栄養素"},
+        barmode="stack"
+    )
+    st.plotly_chart(fig_pfc, use_container_width=True)
+
+# ---------------------------------------------------------
+# TAB 5: 設定
+# ---------------------------------------------------------
+with tab5:
     st.subheader("⚙️ アプリ・目標設定")
     st.write("サイドバーから目標マクロ（カロリー、PFC）を変更・保存できます。")
