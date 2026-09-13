@@ -692,22 +692,23 @@ with tab2:
         for idx, m in enumerate(meals_summary, 1):
             m_type = m.get("meal_type", "不明")
             
+            # 外食情報のテキスト組み立て
+            out_details = []
+            if m.get("is_eating_out"):
+                if m.get("restaurant_name"):
+                    out_details.append(f"店名: {m.get('restaurant_name')}")
+                if m.get("dining_partners"):
+                    out_details.append(f"同行者: {m.get('dining_partners')}")
+                if m.get("eating_out_comment"):
+                    out_details.append(f"メモ: {m.get('eating_out_comment')}")
+            
+            out_info_str = f" 【外食: {' / '.join(out_details) if out_details else '詳細なし'}】" if m.get("is_eating_out") else ""
+            
             with st.container():
-                col_info, col_edit, col_del = st.columns([6, 1.5, 1])
+                col_info, col_edit, col_del = st.columns([7, 1.2, 1])
                 with col_info:
-                    if m.get("is_eating_out"):
-                        st.warning(f"🍺 **{idx}. 【外食 / {m_type}】{m.get('food_name')}** ({m.get('calories')} kcal)\n"
-                                   f"- 店名: {m.get('restaurant_name', '未入力')} / 同行者: {m.get('dining_partners', '未入力')}\n"
-                                   f"- メモ: {m.get('eating_out_comment', 'なし')}")
-                    else:
-                        st.write(f"🍽️ **{idx}. [{m_type}] {m.get('food_name')}** - {m.get('calories')} kcal (P:{m.get('protein')}g, F:{m.get('fat')}g, C:{m.get('carbs')}g)")
+                    st.write(f"**{idx}. [{m_type}] {m.get('food_name')}** - {m.get('calories', 0)}kcal (P:{m.get('protein', 0)}g F:{m.get('fat', 0)}g C:{m.get('carbs', 0)}g){out_info_str}")
                 
-                with col_del:
-                    if st.button("🗑️ 削除", key=f"del_meal_tab2_{m.get('doc_id')}"):
-                        if delete_meal(m.get("doc_id")):
-                            st.success("削除しました！")
-                            st.rerun()
-
                 with col_edit:
                     with st.popover("✏️ 編集"):
                         st.markdown(f"**食事アイテムの編集**")
@@ -745,7 +746,12 @@ with tab2:
                             if update_meal(m.get("doc_id"), updated_data):
                                 st.success("更新しました！")
                                 st.rerun()
-                st.divider()
+
+                with col_del:
+                    if st.button("🗑️ 削除", key=f"del_meal_tab2_{m.get('doc_id')}"):
+                        if delete_meal(m.get("doc_id")):
+                            st.success("削除しました！")
+                            st.rerun()
     else:
         st.caption("選択された日付の食事データはありません。")
 
@@ -817,7 +823,7 @@ with tab3:
     st.divider()
 
     # --- 2. 体組成データの推移グラフ (体重非表示化) ---
-    st.markdown("### ⚖️ 体組成データの推移 (体脂肪率・体脂肪量・骨格筋量)")
+    st.markdown("### 秤 体組成データの推移 (体脂肪率・体脂肪量・骨格筋量)")
     all_body_data = fetch_all_body_comp()
     
     if all_body_data:
