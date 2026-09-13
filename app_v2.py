@@ -428,6 +428,10 @@ with tab1:
     def get_habit_idx(val):
         return habit_options.index(val) if val in habit_options else 3
 
+    # メモ状態の管理（StreamlitWidgetAlreadyInstantiatedError 回避）
+    if "h_memo_input" not in st.session_state:
+        st.session_state["h_memo_input"] = exist_habit.get("memo", "")
+
     with st.form("habit_input_form"):
         st.write("各習慣の達成状況を選択してください（1クリックで入力可能）:")
         h_col1, h_col2, h_col3 = st.columns(3)
@@ -438,11 +442,14 @@ with tab1:
         with h_col3:
             rest_val = st.radio("🍺 休肝日", habit_options, index=get_habit_idx(exist_habit.get("rest_day", "未記録")), horizontal=True, key="h_radio_rest")
             
-        h_memo = st.text_input("習慣メモ", value=st.session_state.get("h_memo_input", exist_habit.get("memo", "")), placeholder="例: 脚トレ実施 / 瞬間英作文20分", key="h_memo_input")
+        h_memo = st.text_input("習慣メモ", value=exist_habit.get("memo", ""), placeholder="例: 脚トレ実施 / 瞬間英作文20分", key="h_memo_field")
         
         if st.form_submit_button("習慣化データを保存"):
             save_daily_habit(selected_date_str, gym_val, eng_val, rest_val, h_memo)
-            st.session_state["h_memo_input"] = ""
+            if "h_memo_input" in st.session_state:
+                st.session_state["h_memo_input"] = ""
+            if "h_memo_field" in st.session_state:
+                st.session_state["h_memo_field"] = ""
             st.success("習慣化データを保存しました。")
             st.rerun()
 
