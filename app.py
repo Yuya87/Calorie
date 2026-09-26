@@ -1,772 +1,602 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from PIL import Image
-import io
-import json
-import datetime
-from zoneinfo import ZoneInfo
-from google.cloud import firestore
-from google.oauth2 import service_account
-from gemini_helper import analyze_meal_or_chat
+from datetime import datetime, timedelta, date
 
-# ------------------------------------------------------------------------------
-# タイムゾーン設定 (ベトナム時間: Asia/Ho_Chi_Minh = UTC+7)
-# ------------------------------------------------------------------------------
-VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+import firestore_db as db
+import ai_services as ai
 
-def get_vietnam_now():
-    """ベトナム時間基準の現在日時(datetime)を取得"""
-    return datetime.datetime.now(VN_TZ)
+# ---------------------------------------------------------
+# 1. ページ初期設定
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="AI Body Make & Habit Tracker",
+    page_icon="💪",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def get_vietnam_today():
-    """ベトナム時間基準の現在日付(date)を取得"""
-    return get_vietnam_now().date()
+# 曜日表記のヘルパー
+WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
+def format_date_with_weekday(d_val):
+    if isinstance(d_val, str):
+        try:
+            d_val = datetime.strptime(d_val, "%Y-%m-%d").date()
+        except Exception:
+            return d_val
+    return f"{d_val.strftime('%Y-%m-%d')} ({WEEKDAYS_JP[d_val.weekday()]})"
 
-# ------------------------------------------------------------------------------
-# 1. Page Config & CSS
-# ------------------------------------------------------------------------------
-st.set_page_config(page_title="AIボディメイク", layout="wide")
+# 食事ソート用ロジック（朝食 -> 昼食 -> 夕食 -> 間食 -> 不明）
+MEAL_ORDER_MAP = {"朝食": 0, "昼食": 1, "夕食": 2, "間食": 3, "不明": 4}
+def sort_meals(meal_list):
+    return sorted(meal_list, key=lambda x: MEAL_ORDER_MAP.get(x.get("meal_type", "不明"), 4))
 
-st.markdown("""
-    <style>
-    h1 {
-        font-size: 1.6rem !important;
-        padding-top: 0.2rem !important;
-        padding-bottom: 0.4rem !important;
-    }
-    h2 {
-        font-size: 1.3rem !important;
-    }
-    h3 {
-        font-size: 1.05rem !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# ---------------------------------------------------------
+# 2. メインUI構造 (Streamlit)
+# ---------------------------------------------------------
+st.title("💪 AI Body Make & Habit Tracker")
 
-st.title("🏃 AIボディメイク")
+if not db.db:
+    st.warning("⚠️ 現在データベース(Firestore)に接続できていません。Streamlit Community Cloudの Secrets 設定を確認してください。")
 
-# --- Firestore初期化 ---
-@st.cache_resource
-def get_db():
-    sec = st.secrets["gcp_service_account"]
-    key_dict = dict(sec)
-
-    if "private_key" in key_dict:
-        key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-
-    creds = service_account.Credentials.from_service_account_info(key_dict)
-    return firestore.Client(credentials=creds, project=key_dict["project_id"])
-    
-db = get_db()
-
-def get_current_goals():
-    default_goals = {"target_cal": 2000.0, "target_p": 120.0, "target_f": 50.0, "target_c": 200.0, "target_alc": 20.0}
-    try:
-        docs = db.collection("user_goals").order_by("updated_at", direction=firestore.Query.DESCENDING).limit(1).get()
-        if docs:
-            data = docs[0].to_dict()
-            return {
-                "target_cal": float(data.get("target_cal", default_goals["target_cal"])),
-                "target_p": float(data.get("target_p", default_goals["target_p"])),
-                "target_f": float(data.get("target_f", default_goals["target_f"])),
-                "target_c": float(data.get("target_c", default_goals["target_c"])),
-                "target_alc": float(data.get("target_alc", default_goals["target_alc"])),
-            }
-    except Exception:
-        return default_goals
-    return default_goals
-
-def get_latest_bmr():
-    try:
-        docs = db.collection("body_composition").order_by("date", direction=firestore.Query.DESCENDING).limit(1).get()
-        if docs:
-            data = docs[0].to_dict()
-            if data.get("bmr"):
-                return float(data["bmr"])
-            elif data.get("weight"):
-                return round(float(data["weight"]) * 21.5, 0)
-    except Exception:
-        pass
-    return 1500.0
-
-def update_goals(cal, p, f, c, alc):
-    db.collection("user_goals").add({
-        "target_cal": cal, "target_p": p, "target_f": f, "target_c": c, "target_alc": alc,
-        "updated_at": firestore.SERVER_TIMESTAMP
-    })
-
-# --- 前提条件（ユーザー定義ルール）管理関数 ---
-def get_user_rules():
-    try:
-        docs = db.collection("user_rules").order_by("created_at", direction=firestore.Query.ASCENDING).get()
-        rules = []
-        for d in docs:
-            data = d.to_dict()
-            data["id"] = d.id
-            rules.append(data)
-        return rules
-    except Exception:
-        return []
-
-def save_user_rule(rule_title, rule_detail):
-    db.collection("user_rules").add({
-        "title": rule_title,
-        "detail": rule_detail,
-        "created_at": firestore.SERVER_TIMESTAMP
-    })
-
-def delete_user_rule(doc_id):
-    db.collection("user_rules").document(doc_id).delete()
-
-def sanitize_firestore_data(data_dict):
-    sanitized = {}
-    for k, v in data_dict.items():
-        if hasattr(v, "isoformat"):
-            sanitized[k] = v.isoformat()
-        elif hasattr(v, "__class__") and "DatetimeWithNanoseconds" in v.__class__.__name__:
-            sanitized[k] = str(v)
-        else:
-            sanitized[k] = v
-    return sanitized
-
-def get_recent_logs_for_context():
-    """Geminiの文脈理解用に直近の日付のログを優先して取得"""
-    try:
-        meals_docs = db.collection("meals").order_by("date", direction=firestore.Query.DESCENDING).limit(30).get()
-    except Exception:
-        meals_docs = []
-
-    try:
-        ex_docs = db.collection("exercises").order_by("date", direction=firestore.Query.DESCENDING).limit(30).get()
-    except Exception:
-        ex_docs = []
-
-    logs = []
-    for d in meals_docs:
-        data = sanitize_firestore_data(d.to_dict())
-        data["doc_id"] = d.id
-        data["collection"] = "meals"
-        logs.append(data)
-
-    for d in ex_docs:
-        data = sanitize_firestore_data(d.to_dict())
-        data["doc_id"] = d.id
-        data["collection"] = "exercises"
-        logs.append(data)
-
-    logs.sort(key=lambda x: str(x.get("date", "")), reverse=True)
-    return logs
-
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "こんにちは！AIボディメイクアシスタントです。食事や運動ログの登録、日付変更、修正、削除など気軽にお申し付けください！"}
-    ]
-
-current_goals = get_current_goals()
-latest_bmr = get_latest_bmr()
-
-# サイドバー設定
-st.sidebar.header("🎯 目標設定")
-with st.sidebar.form("goal_form"):
-    new_cal = st.number_input("目標摂取カロリー (kcal)", value=float(current_goals['target_cal']), step=50.0)
-    new_p = st.number_input("目標 P (g)", value=float(current_goals['target_p']), step=5.0)
-    new_f = st.number_input("目標 F (g)", value=float(current_goals['target_f']), step=5.0)
-    new_c = st.number_input("目標 C (g)", value=float(current_goals['target_c']), step=5.0)
-    new_alc = st.number_input("目標 純アルコール (g)", value=float(current_goals.get('target_alc', 20.0)), step=5.0)
-    if st.form_submit_button("目標を更新"):
-        update_goals(new_cal, new_p, new_f, new_c, new_alc)
-        st.sidebar.success("目標を更新しました！")
-        st.rerun()
-
-st.sidebar.divider()
-st.sidebar.metric("現在の適用基礎代謝 (BMR)", f"{latest_bmr:.0f} kcal", help="タニタの体組成データより自動適用中")
+# サイドバー: 目標設定
+with st.sidebar:
+    st.header("⚙️ システム設定")
+    st.subheader("🎯 目標マクロ設定")
+    current_goals = db.fetch_user_goals()
+    with st.form("goals_form_side"):
+        g_cal = st.number_input("目標カロリー (kcal)", value=int(current_goals.get("target_cal", 2200)))
+        g_p = st.number_input("目標 P (g)", value=int(current_goals.get("target_p", 160)))
+        g_f = st.number_input("目標 F (g)", value=int(current_goals.get("target_f", 50)))
+        g_c = st.number_input("目標 C (g)", value=int(current_goals.get("target_c", 250)))
+        if st.form_submit_button("目標を更新"):
+            db.save_user_goals(g_cal, g_p, g_f, g_c)
+            st.success("目標を更新しました！")
 
 # タブ定義
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "💬 AI対話・記録・直接編集", 
-    "📊 栄養・アルコール管理", 
-    "🔥 カロリー収支 & 運動", 
-    "⚖️ 体組成 (タニタ)",
-    "⚙️ ログルール設定"
+    "📝 本日のデータ入力", 
+    "📊 日次サマリー＆KPI", 
+    "📈 習慣＆体組成の分析", 
+    "📊 過去1週間の推移",
+    "⚙️ 設定"
 ])
 
-# --- TAB 1: AI対話 & 食事ログ一覧・直接編集 ---
+# ---------------------------------------------------------
+# TAB 1: 本日のデータ入力 (メイン入力画面)
+# ---------------------------------------------------------
 with tab1:
-    col_left, col_right = st.columns([1, 1])
+    st.subheader("📅 記録対象日の選択")
+    selected_date = st.date_input("入力・編集する日付 (年月日・曜日)", date.today(), key="main_date_input")
+    selected_date_str = selected_date.strftime("%Y-%m-%d")
+    st.markdown(f"**選択中の日付**: `{format_date_with_weekday(selected_date)}`")
 
-    with col_left:
-        st.header("💬 AIアシスタントと会話して記録")
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
+    # 既存データの取得
+    exist_meals = sort_meals(db.fetch_daily_meals(selected_date_str))
+    exist_exercises = db.fetch_daily_exercises(selected_date_str)
+    exist_habit = db.fetch_daily_habit(selected_date_str)
+    exist_journal = db.fetch_journal(selected_date_str)
+    exist_body = db.fetch_body_comp(selected_date_str)
 
-        uploaded_img = st.file_uploader("写真を送信", type=["jpg", "jpeg", "png"], key="meal_photo")
-        image_obj = Image.open(uploaded_img) if uploaded_img else None
+    st.divider()
 
-        user_input = st.chat_input("例: 昨日の夜のカレーの日付を今日に変更して / さっきの記録を削除して")
+    # 1. 習慣化チェックイン
+    st.subheader("🏋️ 1. 習慣化チェックイン")
+    habit_options = ["目標達成", "一応やった", "未実施", "未記録"]
 
-        if user_input or (uploaded_img and st.button("写真を送信")):
-            input_text = user_input if user_input else "写真を送信しました。"
-            st.session_state.messages.append({"role": "user", "content": input_text})
-            with st.chat_message("user"):
-                st.write(input_text)
+    def get_habit_idx(val):
+        return habit_options.index(val) if val in habit_options else 3
 
-            with st.chat_message("assistant"):
-                with st.spinner("解析・記録中..."):
-                    recent_logs = get_recent_logs_for_context()
-                    user_rules = get_user_rules()
-                    
-                    rules_text = ""
-                    if user_rules:
-                        rules_text = "\n【ユーザー定義の前提ルール・レシピ仕様】\n" + "\n".join([f"- {r['title']}: {r['detail']}" for r in user_rules])
+    def save_habit_callback(date_str):
+        gym_v = st.session_state.get("h_radio_gym", "未記録")
+        eng_v = st.session_state.get("h_radio_eng", "未記録")
+        rest_v = st.session_state.get("h_radio_rest", "未記録")
+        memo_v = st.session_state.get("h_memo_field", "")
+        db.save_daily_habit(date_str, gym_v, eng_v, rest_v, memo_v)
+        st.session_state["habit_saved_msg"] = True
 
-                    context_logs = list(recent_logs)
-                    if rules_text:
-                        context_logs.append({"system_user_rules": rules_text})
+    if "habit_saved_msg" in st.session_state and st.session_state["habit_saved_msg"]:
+        st.success("習慣化データを保存しました。")
+        st.session_state["habit_saved_msg"] = False
 
-                    res = analyze_meal_or_chat(
-                        st.session_state.messages,
-                        user_text=input_text,
-                        image=image_obj,
-                        existing_logs=context_logs
-                    )
-
-                    response_text = res.get("assistant_response", "了解しました！")
-                    action_type = res.get("action_type", "GENERAL_CHAT")
-                    target_date = res.get("target_date") or get_vietnam_today().strftime('%Y-%m-%d')
-
-                    # 食事ログ追加
-                    if action_type == "MEAL_LOG" and res.get("meal_data"):
-                        items = res["meal_data"].get("items", [res["meal_data"]])
-                        saved_summary = []
-                        for m in items:
-                            db.collection("meals").add({
-                                "date": target_date,
-                                "food_name": m.get('food_name', '食事'),
-                                "calories": float(m.get('calories', 0)),
-                                "protein": float(m.get('protein', 0)),
-                                "fat": float(m.get('fat', 0)),
-                                "carbs": float(m.get('carbs', 0)),
-                                "alcohol_g": float(m.get('alcohol_g', 0)),
-                                "is_eating_out": bool(m.get('is_eating_out', False)),
-                                "restaurant_name": m.get('restaurant_name', ''),
-                                "dining_partners": m.get('dining_partners', ''),
-                                "eating_out_comment": m.get('eating_out_comment', ''),
-                                "created_at": firestore.SERVER_TIMESTAMP
-                            })
-                            alc_info = f" (Alc:{m.get('alcohol_g', 0)}g)" if m.get('alcohol_g', 0) > 0 else ""
-                            saved_summary.append(f"• {m.get('food_name')} ({m.get('calories')}kcal / P:{m.get('protein')}g F:{m.get('fat')}g C:{m.get('carbs')}g){alc_info}")
-                        
-                        response_text += f"\n\n✅ **食事記録完了 [{target_date}]**:\n" + "\n".join(saved_summary)
-                        st.rerun()
-
-                    # 運動ログ追加
-                    elif action_type == "EXERCISE_LOG" and res.get("exercise_data"):
-                        items = res["exercise_data"].get("items", [res["exercise_data"]])
-                        saved_summary = []
-                        for e in items:
-                            db.collection("exercises").add({
-                                "date": target_date,
-                                "exercise_name": e.get('exercise_name', '運動'),
-                                "duration_min": float(e.get('duration_min', 0)),
-                                "burned_calories": float(e.get('burned_calories', 0)),
-                                "created_at": firestore.SERVER_TIMESTAMP
-                            })
-                            saved_summary.append(f"• {e.get('exercise_name')} {e.get('duration_min')}分 ({e.get('burned_calories')}kcal消費)")
-                        
-                        response_text += f"\n\n🏋️ **運動記録完了 [{target_date}]**:\n" + "\n".join(saved_summary)
-                        st.rerun()
-
-                    # ログの更新
-                    elif action_type == "UPDATE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
-                        coll = res["target_collection"]
-                        doc_id = res["target_doc_id"]
-                        doc_ref = db.collection(coll).document(doc_id)
-
-                        update_fields = {}
-                        if res.get("target_date"):
-                            update_fields["date"] = res["target_date"]
-
-                        if coll == "meals" and res.get("meal_data"):
-                            m = res["meal_data"]
-                            if "items" in m and len(m["items"]) > 0: m = m["items"][0]
-                            for k in ['food_name', 'calories', 'protein', 'fat', 'carbs', 'alcohol_g', 'is_eating_out', 'restaurant_name', 'dining_partners', 'eating_out_comment']:
-                                if k in m and m[k] is not None: update_fields[k] = m[k]
-                        elif coll == "exercises" and res.get("exercise_data"):
-                            e = res["exercise_data"]
-                            if "items" in e and len(e["items"]) > 0: e = e["items"][0]
-                            for k in ['exercise_name', 'duration_min', 'burned_calories']:
-                                if k in e and e[k] is not None: update_fields[k] = e[k]
-
-                        if update_fields:
-                            doc_ref.update(update_fields)
-                            date_info = f" (日付: {update_fields['date']})" if "date" in update_fields else ""
-                            response_text += f"\n\n✏️ **ログ更新完了**{date_info}"
-                            st.rerun()
-
-                    # ログの削除
-                    elif action_type == "DELETE_LOG" and res.get("target_doc_id") and res.get("target_collection"):
-                        coll = res["target_collection"]
-                        doc_id = res["target_doc_id"]
-                        db.collection(coll).document(doc_id).delete()
-                        response_text += f"\n\n🗑️ **ログ削除完了** (ID: {doc_id})"
-                        st.rerun()
-
-                    # 目標設定の更新
-                    elif action_type == "UPDATE_GOAL" and res.get("goal_data"):
-                        g = res["goal_data"]
-                        update_goals(g.get("target_cal", current_goals['target_cal']),
-                                     g.get("target_p", current_goals['target_p']),
-                                     g.get("target_f", current_goals['target_f']),
-                                     g.get("target_c", current_goals['target_c']),
-                                     g.get("target_alc", current_goals.get('target_alc', 20.0)))
-                        response_text += f"\n\n🎯 **目標設定更新完了**"
-                        st.rerun()
-
-                    st.write(response_text)
-                    st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-    with col_right:
-        st.header("🥗 食事ログの直接編集・手動追加")
+    with st.form("habit_input_form"):
+        st.write("各習慣の達成状況を選択してください（1クリックで入力可能）:")
+        h_col1, h_col2, h_col3 = st.columns(3)
+        with h_col1:
+            gym_val = st.radio("🏃 運動", habit_options, index=get_habit_idx(exist_habit.get("gym", "未記録")), horizontal=True, key="h_radio_gym")
+        with h_col2:
+            eng_val = st.radio("📚 英語学習", habit_options, index=get_habit_idx(exist_habit.get("english", "未記録")), horizontal=True, key="h_radio_eng")
+        with h_col3:
+            rest_val = st.radio("🍺 休肝日", habit_options, index=get_habit_idx(exist_habit.get("rest_day", "未記録")), horizontal=True, key="h_radio_rest")
+            
+        h_memo = st.text_input("習慣メモ", value=exist_habit.get("memo", ""), placeholder="例: 脚トレ実施 / 瞬間英作文20分", key="h_memo_field")
         
-        # --- 手動追加フォーム（外食の動的フィールド付き） ---
-        with st.expander("➕ 食事ログを手動で追加", expanded=False):
-            with st.form("manual_meal_form", clear_on_submit=True):
-                m_date = st.date_input("日付", value=get_vietnam_today())
-                m_food = st.text_input("品目名", placeholder="例: 鶏胸肉とブロッコリー")
-                col1, col2 = st.columns(2)
-                with col1:
-                    m_cal = st.number_input("カロリー (kcal)", min_value=0.0, step=10.0)
-                    m_p = st.number_input("タンパク質 P (g)", min_value=0.0, step=1.0)
-                    m_f = st.number_input("脂質 F (g)", min_value=0.0, step=1.0)
-                with col2:
-                    m_c = st.number_input("炭水化物 C (g)", min_value=0.0, step=1.0)
-                    m_alc = st.number_input("純アルコール (g)", min_value=0.0, step=1.0)
+        st.form_submit_button("習慣化データを保存", on_click=save_habit_callback, args=(selected_date_str,))
 
-                # 外食チェックボックスと動的フィールド
-                m_is_eating_out = st.checkbox("外食・会食として記録する", key="add_is_eating_out")
-                m_restaurant = ""
-                m_partners = ""
-                m_comment = ""
-                if m_is_eating_out:
-                    st.markdown("##### 🍽️ 外食・会食の詳細情報")
-                    m_restaurant = st.text_input("店名・場所", placeholder="例: 鳥貴族 渋谷店")
-                    m_partners = st.text_input("同行者", placeholder="例: 社内同僚2名")
-                    m_comment = st.text_area("外食メモ・評価", placeholder="例: 焼き鳥中心、タレは控えめにした")
+    st.divider()
 
-                if st.form_submit_button("食事ログを保存"):
-                    if m_food:
-                        db.collection("meals").add({
-                            "date": m_date.strftime("%Y-%m-%d"),
-                            "food_name": m_food,
-                            "calories": float(m_cal),
-                            "protein": float(m_p),
-                            "fat": float(m_f),
-                            "carbs": float(m_c),
-                            "alcohol_g": float(m_alc),
-                            "is_eating_out": m_is_eating_out,
-                            "restaurant_name": m_restaurant,
-                            "dining_partners": m_partners,
-                            "eating_out_comment": m_comment,
-                            "created_at": firestore.SERVER_TIMESTAMP
-                        })
-                        st.success("食事ログを保存しました！")
-                        st.rerun()
-                    else:
-                        st.error("品目名を入力してください。")
+    # 2. 食事ログ入力
+    st.subheader("🥗 2. 食事ログの入力")
+    
+    with st.expander("📖 単語辞書（カスタム栄養定義）の確認・追加"):
+        user_rules = db.fetch_user_rules()
+        if user_rules:
+            st.markdown("**登録済みの辞書ルール:**")
+            for r in user_rules:
+                r_col1, r_col2 = st.columns([5, 1])
+                r_col1.write(f"・**{r.get('title')}**: {r.get('detail')}")
+                if r_col2.button("削除", key=f"del_rule_tab1_{r.get('doc_id')}"):
+                    db.delete_user_rule(r.get('doc_id'))
+                    st.rerun()
+        else:
+            st.caption("登録された単語辞書はありません。")
+            
+        with st.form("add_rule_form_tab1", clear_on_submit=True):
+            r_title = st.text_input("単語・料理名", placeholder="例: ゆで卵")
+            r_detail = st.text_area("計算ルール・仕様", placeholder="例: 黄身は食べないので白身のみのカロリー・タンパク質で計算する。")
+            if st.form_submit_button("単語を辞書登録"):
+                if r_title and r_detail:
+                    db.save_user_rule(r_title, r_detail)
+                    st.success(f"単語「{r_title}」を辞書に登録しました！")
+                    st.rerun()
 
-        st.subheader("📋 登録済み食事ログ（直近30件）")
-        try:
-            meal_docs = db.collection("meals").order_by("date", direction=firestore.Query.DESCENDING).limit(30).get()
-        except Exception:
-            meal_docs = []
+    st.markdown("**🤖 新規食事の入力（AI解析）**")
+    
+    with st.form("meal_input_ai_form", clear_on_submit=True):
+        meal_text = st.text_area(
+            "食事内容（時間帯の指定がない場合は現在の時間からAIが推測します）", 
+            placeholder="例: 昼食に丸の内のうなぎ屋で特上うな重を食べた。", 
+            key="meal_text_area"
+        )
+        
+        is_out = st.checkbox("🍔 外食・会食として記録する", key="chk_is_out")
+        
+        st.markdown("##### 🍺 外食詳細情報 (※「外食・会食として記録する」にチェック時)")
+        m_col1, m_col2 = st.columns(2)
+        rest_name = m_col1.text_input("店名・場所", key="input_rest_name")
+        partners = m_col2.text_input("誰と（同行者）", key="input_partners")
+        out_comment = st.text_input("外食に関するメモ・評価", key="input_out_comment")
 
-        if meal_docs:
-            for doc in meal_docs:
-                m_data = doc.to_dict()
-                m_id = doc.id
-                m_date_str = m_data.get("date", "不明")
-                m_name = m_data.get("food_name", "食事")
-                m_cal_val = float(m_data.get("calories", 0))
-                m_p_val = float(m_data.get("protein", 0))
-                m_f_val = float(m_data.get("fat", 0))
-                m_c_val = float(m_data.get("carbs", 0))
-                m_alc_val = float(m_data.get("alcohol_g", 0))
-                m_out = bool(m_data.get("is_eating_out", False))
+        submit_meal = st.form_submit_button("AIで解析して食事を保存", type="primary")
+
+    if submit_meal:
+        if meal_text.strip():
+            with st.spinner("AIが栄養素を解析中..."):
+                adv = ai.parse_and_save_meal(meal_text, selected_date_str, is_out, rest_name, partners, out_comment)
+                st.success(f"保存完了: {adv}")
+                st.rerun()
+        else:
+            st.warning("食事内容を入力してください。")
+
+    if exist_meals:
+        with st.expander(f"📋 登録済みの食事 ({len(exist_meals)} 件) ※朝食・昼食・夕食順", expanded=True):
+            for idx, m in enumerate(exist_meals, 1):
+                out_info = f" 【外食: {m.get('restaurant_name', '')}】" if m.get("is_eating_out") else ""
+                meal_type = m.get("meal_type", "不明")
+                st.write(f"**{idx}. [{meal_type}] {m.get('food_name')}** - {m.get('calories', 0)}kcal (P:{m.get('protein', 0)}g F:{m.get('fat', 0)}g C:{m.get('carbs', 0)}g){out_info}")
+            st.caption("※食事の編集・削除は「日次サマリー&KPI」タブにて行えます。")
+
+    st.divider()
+
+    # 3. 運動ログ入力
+    st.subheader("🏃 3. 運動ログの入力")
+
+    st.markdown("**🔥 傾斜ウォーキングのワンタップ記録**")
+    with st.form("incline_walking_form"):
+        walk_col1, walk_col2 = st.columns([3, 1])
+        with walk_col1:
+            walk_min = st.number_input("実施時間 (分)", min_value=1, value=30, step=5)
+        with walk_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.form_submit_button("ワンタップ記録"):
+                burn = walk_min * 7.5
+                db.save_exercise_record({
+                    "date": selected_date_str,
+                    "exercise_name": "傾斜ウォーキング",
+                    "duration_min": float(walk_min),
+                    "burned_calories": float(burn)
+                })
+                st.success("傾斜ウォーキングを記録しました！")
+                st.rerun()
+
+    st.markdown("**🤖 その他の運動記録（AI解析）**")
+    with st.form("exercise_ai_form", clear_on_submit=True):
+        ex_text = st.text_area("その他の運動内容", placeholder="例: ベンチプレス 30分")
+        if st.form_submit_button("AIで解析して運動を保存"):
+            if ex_text.strip():
+                with st.spinner("AIが消費カロリーを解析中..."):
+                    adv = ai.parse_and_save_exercise(ex_text, selected_date_str)
+                    st.success(f"保存完了: {adv}")
+                    st.rerun()
+            else:
+                st.warning("運動内容を入力してください。")
+
+    if exist_exercises:
+        with st.expander(f"📋 登録済みの運動 ({len(exist_exercises)} 件)", expanded=True):
+            for idx, e in enumerate(exist_exercises, 1):
+                st.write(f"{idx}. **{e.get('exercise_name')}** - {e.get('duration_min')}分 ({e.get('burned_calories')} kcal消費)")
+
+    st.divider()
+
+    # 4. ジャーナリング入力
+    st.subheader("📖 4. 本日のジャーナリング（振り返り）")
+    with st.form("journal_input_form", clear_on_submit=True):
+        j_note = st.text_area(
+            "振り返り・体調・気づき", 
+            value=exist_journal.get("note", "") if exist_journal else "",
+            height=100
+        )
+        if st.form_submit_button("ジャーナルを保存"):
+            if j_note.strip():
+                with st.spinner("Geminiがフィードバックを生成中..."):
+                    fb = ai.generate_journal_feedback(j_note)
+                    db.save_journal(selected_date_str, j_note, fb)
+                    st.success("ジャーナルとAIフィードバックを保存しました！")
+                    st.rerun()
+            else:
+                db.save_journal(selected_date_str, "", "")
+                st.success("ジャーナルをクリアしました。")
+                st.rerun()
+
+    if exist_journal and exist_journal.get("note"):
+        st.markdown(f"**📝 登録済みの振り返り ({format_date_with_weekday(selected_date_str)})**: {exist_journal.get('note')}")
+        if exist_journal.get("ai_feedback"):
+            st.info(f"🤖 **AIコーチからのフィードバック**:\n\n{exist_journal.get('ai_feedback')}")
+
+    st.divider()
+
+    # 5. 体組成データのCSVインポート
+    st.subheader("⚙️ 5. 体組成データの入力 (CSV一括アップロード)")
+    st.info("※対応形式: オムロン / タニタ等の体組成計CSVデータ（測定日、体重(kg)、体脂肪(%)、骨格筋量(kg)、基礎代謝(kcal) が含まれるデータ）")
+    
+    uploaded_file = st.file_uploader("体組成計のCSVデータをアップロード", type=["csv"])
+    if uploaded_file is not None:
+        if st.button("CSVデータをインポート"):
+            try:
+                df = pd.read_csv(uploaded_file)
+                date_col = [c for c in df.columns if "測定" in c or "日付" in c or "date" in c.lower()]
+                weight_col = [c for c in df.columns if "体重" in c or "weight" in c.lower()]
+                fat_col = [c for c in df.columns if "体脂肪" in c or "fat" in c.lower()]
+                muscle_col = [c for c in df.columns if "骨格筋" in c or "筋肉" in c or "muscle" in c.lower()]
+                bmr_col = [c for c in df.columns if "基礎代謝" in c or "bmr" in c.lower()]
+
+                if date_col and weight_col:
+                    d_c = date_col[0]
+                    w_c = weight_col[0]
+                    f_c = fat_col[0] if fat_col else None
+                    m_c = muscle_col[0] if muscle_col else None
+                    b_c = bmr_col[0] if bmr_col else None
+
+                    df['date_str'] = pd.to_datetime(df[d_c]).dt.strftime('%Y-%m-%d')
+                    df['datetime'] = pd.to_datetime(df[d_c])
+                    
+                    df = df.sort_values('datetime')
+                    df_daily = df.drop_duplicates(subset=['date_str'], keep='last')
+                    
+                    count = db.save_batch_body_comp(df_daily, w_c, f_c, m_c, b_c)
+                    st.success(f"{count}日分の体組成データをFirestoreに一括登録しました！「習慣＆体組成の分析」タブにて反映をご確認いただけます。")
+                else:
+                    st.error("CSVの形式が異なります。対応するカラム（測定日、体重(kg) 等）が含まれるデータをアップロードしてください。")
+            except Exception as e:
+                st.error(f"インポート処理中にエラーが発生しました: {e}")
+
+# ---------------------------------------------------------
+# TAB 2: 日次サマリー ＆ KPI (日付選択機能付き)
+# ---------------------------------------------------------
+with tab2:
+    st.subheader("📊 日次サマリー ＆ 該当日の明細")
+    
+    tab2_selected_date = st.date_input("表示する日付を選択", selected_date, key="summary_date_picker")
+    tab2_selected_date_str = tab2_selected_date.strftime("%Y-%m-%d")
+    
+    st.markdown(f"#### 対象日: `{format_date_with_weekday(tab2_selected_date)}`")
+    
+    meals_summary = sort_meals(db.fetch_daily_meals(tab2_selected_date_str))
+    exercises_summary = db.fetch_daily_exercises(tab2_selected_date_str)
+    goals = db.fetch_user_goals()
+    habit_summary = db.fetch_daily_habit(tab2_selected_date_str)
+    
+    tot_cal = sum(m.get("calories", 0) for m in meals_summary)
+    tot_p = sum(m.get("protein", 0) for m in meals_summary)
+    tot_f = sum(m.get("fat", 0) for m in meals_summary)
+    tot_c = sum(m.get("carbs", 0) for m in meals_summary)
+    tot_burn = sum(e.get("burned_calories", 0) for e in exercises_summary)
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("カロリー", f"{int(tot_cal)} kcal", f"{int(tot_cal - goals['target_cal'])} kcal")
+    col2.metric("P (タンパク質)", f"{tot_p:.1f} g", f"{tot_p - goals['target_p']:.1f} g")
+    col3.metric("F (脂質)", f"{tot_f:.1f} g", f"{tot_f - goals['target_f']:.1f} g")
+    col4.metric("C (炭水化物)", f"{tot_c:.1f} g", f"{tot_c - goals['target_c']:.1f} g")
+    col5.metric("運動消費", f"{int(tot_burn)} kcal", f"{len(exercises_summary)} 件")
+
+    st.divider()
+
+    st.markdown("##### 🏋️ 選択日の習慣達成ステータス")
+    hc1, hc2, hc3 = st.columns(3)
+    hc1.info(f"**運動**: {habit_summary.get('gym', '未記録')}")
+    hc2.info(f"**英語学習**: {habit_summary.get('english', '未記録')}")
+    hc3.info(f"**休肝日**: {habit_summary.get('rest_day', '未記録')}")
+
+    st.divider()
+
+    st.markdown("##### 🥗 食事明細＆外食記録（朝食・昼食・夕食順）")
+    if meals_summary:
+        for idx, m in enumerate(meals_summary, 1):
+            m_type = m.get("meal_type", "不明")
+            
+            out_details = []
+            if m.get("is_eating_out"):
+                if m.get("restaurant_name"):
+                    out_details.append(f"店名: {m.get('restaurant_name')}")
+                if m.get("dining_partners"):
+                    out_details.append(f"同行者: {m.get('dining_partners')}")
+                if m.get("eating_out_comment"):
+                    out_details.append(f"メモ: {m.get('eating_out_comment')}")
+            
+            out_info_str = f" 【外食: {' / '.join(out_details) if out_details else '詳細なし'}】" if m.get("is_eating_out") else ""
+            
+            with st.container():
+                col_info, col_edit, col_del = st.columns([7, 1.2, 1])
+                with col_info:
+                    st.write(f"**{idx}. [{m_type}] {m.get('food_name')}** - {m.get('calories', 0)}kcal (P:{m.get('protein', 0)}g F:{m.get('fat', 0)}g C:{m.get('carbs', 0)}g){out_info_str}")
                 
-                alc_str = f" | Alc:{m_alc_val:.0f}g" if m_alc_val > 0 else ""
-                out_badge = " 🍺 [外食]" if m_out else ""
+                with col_edit:
+                    with st.popover("✏️ 編集"):
+                        st.markdown(f"**食事アイテムの編集**")
+                        edit_food = st.text_input("品目名", value=m.get("food_name", ""), key=f"ef_name_{m.get('doc_id')}")
+                        edit_type = st.selectbox("食事タイプ", ["朝食", "昼食", "夕食", "間食", "不明"], 
+                                                 index=["朝食", "昼食", "夕食", "間食", "不明"].index(m.get("meal_type", "不明")) if m.get("meal_type") in ["朝食", "昼食", "夕食", "間食", "不明"] else 4, 
+                                                 key=f"ef_type_{m.get('doc_id')}")
+                        
+                        ec1, ec2 = st.columns(2)
+                        edit_cal = ec1.number_input("カロリー (kcal)", value=float(m.get("calories", 0)), key=f"ef_cal_{m.get('doc_id')}")
+                        edit_p = ec2.number_input("タンパク質 P (g)", value=float(m.get("protein", 0)), key=f"ef_p_{m.get('doc_id')}")
+                        edit_f = ec1.number_input("脂質 F (g)", value=float(m.get("fat", 0)), key=f"ef_f_{m.get('doc_id')}")
+                        edit_c = ec2.number_input("炭水化物 C (g)", value=float(m.get("carbs", 0)), key=f"ef_c_{m.get('doc_id')}")
+                        
+                        edit_is_out = st.checkbox("🍔 外食・会食", value=bool(m.get("is_eating_out")), key=f"ef_isout_{m.get('doc_id')}")
+                        edit_rest, edit_part, edit_comment = m.get("restaurant_name", ""), m.get("dining_partners", ""), m.get("eating_out_comment", "")
+                        if edit_is_out:
+                            edit_rest = st.text_input("店名・場所", value=m.get("restaurant_name", ""), key=f"ef_rest_{m.get('doc_id')}")
+                            edit_part = st.text_input("同行者", value=m.get("dining_partners", ""), key=f"ef_part_{m.get('doc_id')}")
+                            edit_comment = st.text_input("外食メモ", value=m.get("eating_out_comment", ""), key=f"ef_comm_{m.get('doc_id')}")
 
-                with st.container():
-                    st.markdown(f"**📅 {m_date_str} - {m_name}**{out_badge}")
-                    st.caption(f"{m_cal_val:.0f} kcal (P:{m_p_val:.1f}g / F:{m_f_val:.1f}g / C:{m_c_val:.1f}g){alc_str}")
-
-                    c_btn1, c_btn2 = st.columns([1, 1])
-                    with c_btn1:
-                        if st.button("🗑️ 削除", key=f"del_m_{m_id}"):
-                            db.collection("meals").document(m_id).delete()
-                            st.success("ログを削除しました。")
-                            st.rerun()
-
-                    with c_btn2:
-                        edit_expanded = st.checkbox("✏️ 編集", key=f"check_edit_{m_id}")
-
-                    if edit_expanded:
-                        with st.form(key=f"edit_form_{m_id}"):
-                            e_date = st.text_input("日付 (YYYY-MM-DD)", value=m_date_str)
-                            e_food = st.text_input("品目名", value=m_name)
-                            ec1, ec2 = st.columns(2)
-                            with ec1:
-                                e_cal = st.number_input("カロリー (kcal)", value=m_cal_val, step=10.0)
-                                e_p = st.number_input("P (g)", value=m_p_val, step=1.0)
-                                e_f = st.number_input("F (g)", value=m_f_val, step=1.0)
-                            with ec2:
-                                e_c = st.number_input("C (g)", value=m_c_val, step=1.0)
-                                e_alc = st.number_input("純アルコール (g)", value=m_alc_val, step=1.0)
-
-                            e_out = st.checkbox("外食・会食として記録する", value=m_out, key=f"edit_out_{m_id}")
-                            e_rest = st.text_input("店名・場所", value=m_data.get("restaurant_name", ""))
-                            e_part = st.text_input("同行者", value=m_data.get("dining_partners", ""))
-                            e_comm = st.text_area("外食メモ", value=m_data.get("eating_out_comment", ""))
-
-                            if st.form_submit_button("更新を保存"):
-                                db.collection("meals").document(m_id).update({
-                                    "date": e_date,
-                                    "food_name": e_food,
-                                    "calories": float(e_cal),
-                                    "protein": float(e_p),
-                                    "fat": float(e_f),
-                                    "carbs": float(e_c),
-                                    "alcohol_g": float(e_alc),
-                                    "is_eating_out": e_out,
-                                    "restaurant_name": e_rest if e_out else "",
-                                    "dining_partners": e_part if e_out else "",
-                                    "eating_out_comment": e_comm if e_out else ""
-                                })
+                        if st.button("更新を保存", key=f"save_edit_{m.get('doc_id')}"):
+                            updated_data = {
+                                "food_name": edit_food,
+                                "meal_type": edit_type,
+                                "calories": float(edit_cal),
+                                "protein": float(edit_p),
+                                "fat": float(edit_f),
+                                "carbs": float(edit_c),
+                                "is_eating_out": edit_is_out,
+                                "restaurant_name": edit_rest if edit_is_out else "",
+                                "dining_partners": edit_part if edit_is_out else "",
+                                "eating_out_comment": edit_comment if edit_is_out else ""
+                            }
+                            if db.update_meal(m.get("doc_id"), updated_data):
                                 st.success("更新しました！")
                                 st.rerun()
-                    st.divider()
-        else:
-            st.info("食事ログがありません。")
 
-# --- TAB 2: 栄養＆アルコール管理 ---
-with tab2:
-    st.header("日別 PFC ＆ アルコール摂取管理")
-    
-    docs = db.collection("meals").get()
-    meal_list = [d.to_dict() for d in docs]
-
-    if meal_list:
-        df_m = pd.DataFrame(meal_list)
-
-        for col in ['calories', 'protein', 'fat', 'carbs', 'alcohol_g']:
-            if col in df_m.columns:
-                df_m[col] = pd.to_numeric(df_m[col], errors='coerce').fillna(0)
-            else:
-                df_m[col] = 0.0
-
-        df_meals = df_m.groupby('date').agg({
-            'calories': 'sum', 'protein': 'sum', 'fat': 'sum', 'carbs': 'sum', 'alcohol_g': 'sum'
-        }).reset_index().sort_values('date')
-
-        latest = df_meals.iloc[-1]
-        st.subheader(f"🎯 本日 ({latest['date']}) の達成状況")
-        
-        c1, c2, c3, c4 = st.columns(4)
-        
-        with c1:
-            cal_val = latest['calories']
-            cal_diff = cal_val - current_goals['target_cal']
-            st.metric("摂取カロリー", f"{cal_val:.0f} kcal", f"{cal_diff:+.0f} kcal")
-            st.progress(min(1.0, max(0.0, cal_val / current_goals['target_cal'])), text=f"目標: {current_goals['target_cal']:.0f} kcal")
-
-        with c2:
-            p_val = latest['protein']
-            p_diff = p_val - current_goals['target_p']
-            st.metric("Protein (P)", f"{p_val:.1f} g", f"{p_diff:+.1f} g")
-            st.progress(min(1.0, max(0.0, p_val / current_goals['target_p'])), text=f"目標: {current_goals['target_p']:.0f}g")
-
-        with c3:
-            f_val = latest['fat']
-            f_diff = f_val - current_goals['target_f']
-            st.metric("Fat (F)", f"{f_val:.1f} g", f"{f_diff:+.1f} g")
-            st.progress(min(1.0, max(0.0, f_val / current_goals['target_f'])), text=f"目標: {current_goals['target_f']:.0f}g")
-
-        with c4:
-            c_val = latest['carbs']
-            c_diff = c_val - current_goals['target_c']
-            st.metric("Carbs (C)", f"{c_val:.1f} g", f"{c_diff:+.1f} g")
-            st.progress(min(1.0, max(0.0, c_val / current_goals['target_c'])), text=f"目標: {current_goals['target_c']:.0f}g")
-
-        st.markdown("---")
-
-        # 直近3週間の月〜日 積み上げ比較グラフ
-        st.subheader("🗓️ 直近3週間の摂取カロリー比較（月〜日 積み上げ）")
-        
-        df_meals['dt'] = pd.to_datetime(df_meals['date'])
-        
-        today = get_vietnam_today()
-        current_monday = today - datetime.timedelta(days=today.weekday())
-        
-        week_defs = [
-            {"label": "2週前", "start": current_monday - datetime.timedelta(weeks=2)},
-            {"label": "先週", "start": current_monday - datetime.timedelta(weeks=1)},
-            {"label": "今週", "start": current_monday}
-        ]
-
-        day_order_map = {0: '1.月', 1: '2.火', 2: '3.水', 3: '4.木', 4: '5.金', 5: '6.土', 6: '7.日'}
-
-        stacked_rows = []
-        for w in week_defs:
-            w_start = w["start"]
-            w_end = w_start + datetime.timedelta(days=6)
-            
-            mask = (df_meals['dt'].dt.date >= w_start) & (df_meals['dt'].dt.date <= w_end)
-            df_w = df_meals[mask].copy()
-            
-            if not df_w.empty:
-                df_w['week_label'] = w["label"]
-                df_w['day_label'] = df_w['dt'].dt.weekday.map(day_order_map)
-                for _, r in df_w.iterrows():
-                    stacked_rows.append({
-                        'week_label': w["label"],
-                        'day_label': r['day_label'],
-                        'calories': r['calories']
-                    })
-
-        if stacked_rows:
-            df_3weeks = pd.DataFrame(stacked_rows)
-            weekly_target_cal = current_goals['target_cal'] * 7.0
-
-            fig_3w = px.bar(
-                df_3weeks,
-                x='week_label',
-                y='calories',
-                color='day_label',
-                title="2週前 vs 先週 vs 今週（曜日別積み上げカロリー）",
-                labels={'week_label': '週', 'calories': '摂取カロリー (kcal)', 'day_label': '曜日'},
-                category_orders={
-                    'week_label': ['2週前', '先週', '今週'],
-                    'day_label': ['1.月', '2.火', '3.水', '4.木', '5.金', '6.土', '7.日']
-                },
-                color_discrete_sequence=px.colors.qualitative.Pastel
-            )
-            
-            fig_3w.add_hline(
-                y=weekly_target_cal, 
-                line_dash="dash", 
-                line_color="red", 
-                annotation_text=f"7日間目標: {weekly_target_cal:.0f} kcal", 
-                annotation_position="top right"
-            )
-            fig_3w.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_3w, use_container_width=True)
-        else:
-            st.info("過去3週間分の食事ログがありません。")
-
-        st.markdown("---")
-
-        # 日別推移の個別棒グラフ
-        st.subheader("📈 指標別 日推移グラフ")
-
-        col_g1, col_g2 = st.columns(2)
-        target_alc_val = current_goals.get('target_alc', 20.0)
-
-        with col_g1:
-            fig_cal = px.bar(df_meals, x='date', y='calories', title="摂取カロリー (kcal)", color_discrete_sequence=["#2A9D8F"])
-            fig_cal.add_hline(y=current_goals['target_cal'], line_dash="dash", line_color="red", annotation_text="目標")
-            fig_cal.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_cal, use_container_width=True)
-
-            fig_f = px.bar(df_meals, x='date', y='fat', title="Fat / 脂質 (g)", color_discrete_sequence=["#FFAA00"])
-            fig_f.add_hline(y=current_goals['target_f'], line_dash="dash", line_color="red", annotation_text="目標")
-            fig_f.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_f, use_container_width=True)
-
-            fig_alc = px.bar(df_meals, x='date', y='alcohol_g', title="純アルコール (g)", color_discrete_sequence=["#9D4EDD"])
-            fig_alc.add_hline(y=target_alc_val, line_dash="dash", line_color="red", annotation_text="目標上限")
-            fig_alc.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_alc, use_container_width=True)
-
-        with col_g2:
-            fig_p = px.bar(df_meals, x='date', y='protein', title="Protein / タンパク質 (g)", color_discrete_sequence=["#FF4B4B"])
-            fig_p.add_hline(y=current_goals['target_p'], line_dash="dash", line_color="red", annotation_text="目標")
-            fig_p.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_p, use_container_width=True)
-
-            fig_c = px.bar(df_meals, x='date', y='carbs', title="Carbs / 炭水化物 (g)", color_discrete_sequence=["#00B4D8"])
-            fig_c.add_hline(y=current_goals['target_c'], line_dash="dash", line_color="red", annotation_text="目標")
-            fig_c.update_layout(height=260, xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_c, use_container_width=True)
-
-        st.markdown("---")
-
-        st.subheader("📋 直近3日間の活動サマリ")
-
-        today = get_vietnam_today()
-        recent_3_dates = [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)]
-
-        ex_docs = db.collection("exercises").get()
-        ex_list = [d.to_dict() for d in ex_docs]
-        df_ex_all = pd.DataFrame(ex_list) if ex_list else pd.DataFrame()
-
-        cols = st.columns(3)
-        for idx, target_d in enumerate(recent_3_dates):
-            with cols[idx]:
-                day_label = "本日" if idx == 0 else ("昨日" if idx == 1 else "一昨日")
-                st.markdown(f"**📅 {target_d} ({day_label})**")
-
-                day_meals = df_m[df_m['date'] == target_d] if not df_m.empty else pd.DataFrame()
-                with st.expander("🥗 食事内容", expanded=True):
-                    if not day_meals.empty:
-                        for _, row in day_meals.iterrows():
-                            fname = row.get('food_name', '食事')
-                            cal = row.get('calories', 0)
-                            alc = row.get('alcohol_g', 0)
-                            out_flag = " 🍺[外食]" if row.get('is_eating_out', False) else ""
-                            alc_str = f" / Alc:{alc:.0f}g" if alc > 0 else ""
-                            st.markdown(f"- **{fname}** ({cal:.0f}kcal{alc_str}){out_flag}")
-                    else:
-                        st.caption("記録がありません")
-
-                day_ex = df_ex_all[df_ex_all['date'] == target_d] if not df_ex_all.empty and 'date' in df_ex_all.columns else pd.DataFrame()
-                with st.expander("🏃 運動内容", expanded=True):
-                    if not day_ex.empty:
-                        for _, row in day_ex.iterrows():
-                            ename = row.get('exercise_name', '運動')
-                            dur = row.get('duration_min', 0)
-                            burn = row.get('burned_calories', 0)
-                            st.markdown(f"- **{ename}** {dur:.0f}分 ({burn:.0f}kcal消費)")
-                    else:
-                        st.caption("記録がありません")
-
+                with col_del:
+                    if st.button("🗑️ 削除", key=f"del_meal_tab2_{m.get('doc_id')}"):
+                        if db.delete_meal(m.get("doc_id")):
+                            st.success("削除しました！")
+                            st.rerun()
     else:
-        st.info("データがまだありません。AI対話タブから食事を記録してください。")
+        st.caption("選択された日付の食事データはありません。")
 
-# --- TAB 3: カロリー収支＆運動 ---
+# ---------------------------------------------------------
+# TAB 3: 習慣 ＆ 体組成の分析
+# ---------------------------------------------------------
 with tab3:
-    st.header("🔥 カロリー収支")
-    m_docs = [d.to_dict() for d in db.collection("meals").get()]
-    e_docs = [d.to_dict() for d in db.collection("exercises").get()]
-    b_docs = [d.to_dict() for d in db.collection("body_composition").get()]
+    st.subheader("📈 習慣 ＆ 体組成データの分析")
+    
+    st.markdown("### 🗓️ 過去30日間の習慣達成マトリクス（色分け一覧）")
+    
+    end_date = date.today()
+    start_30d = end_date - timedelta(days=29)
+    habits_30d = db.fetch_habits_range(start_30d.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    
+    date_list = [(start_30d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
+    habit_dict = {h.get("date"): h for h in habits_30d}
+    
+    items = ["運動", "英語学習", "休肝日"]
+    item_keys = {"運動": "gym", "英語学習": "english", "休肝日": "rest_day"}
+    
+    score_map = {"未記録": 0, "未実施": 1, "一応やった": 2, "目標達成": 3}
+    
+    matrix_data = []
+    text_matrix = []
+    
+    for item in items:
+        row_scores = []
+        row_texts = []
+        k = item_keys[item]
+        for d_str in date_list:
+            h_record = habit_dict.get(d_str, {})
+            st_val = h_record.get(k, "未記録")
+            row_scores.append(score_map.get(st_val, 0))
+            row_texts.append(f"{d_str}<br>{item}: {st_val}")
+        matrix_data.append(row_scores)
+        text_matrix.append(row_texts)
+        
+    colorscale = [
+        [0.0, "#f3f4f6"],  # 未記録
+        [0.33, "#93c5fd"], # 未実施
+        [0.66, "#3b82f6"], # 一応やった
+        [1.0, "#1d4ed8"]   # 目標達成
+    ]
+    
+    fig_heatmap = px.imshow(
+        matrix_data,
+        x=date_list,
+        y=items,
+        color_continuous_scale=colorscale,
+        range_color=[0, 3],
+        aspect="auto",
+        title="過去30日間の習慣達成結果"
+    )
+    fig_heatmap.update_traces(
+        xgap=4,
+        ygap=4,
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=text_matrix
+    )
+    fig_heatmap.update_coloraxes(showscale=False)
+    fig_heatmap.update_xaxes(side="bottom", tickangle=-45)
+    fig_heatmap.update_layout(
+        margin=dict(l=60, r=20, t=50, b=60)
+    )
+    st.plotly_chart(fig_heatmap, use_container_width=True)
 
-    df_in = pd.DataFrame(m_docs).groupby('date')['calories'].sum().reset_index() if m_docs else pd.DataFrame(columns=['date', 'calories'])
-    df_ex = pd.DataFrame(e_docs).groupby('date')['burned_calories'].sum().reset_index() if e_docs else pd.DataFrame(columns=['date', 'burned_calories'])
-    df_bmr = pd.DataFrame(b_docs)[['date', 'bmr']] if b_docs and 'bmr' in pd.DataFrame(b_docs).columns else pd.DataFrame(columns=['date', 'bmr'])
+    st.divider()
 
-    if not df_in.empty or not df_ex.empty:
-        df_bal = pd.merge(df_in, df_ex, on='date', how='outer').fillna(0)
-        df_bal = pd.merge(df_bal, df_bmr, on='date', how='left') if not df_bmr.empty else df_bal
-        df_bal['bmr'] = df_bal['bmr'].fillna(latest_bmr) if 'bmr' in df_bal.columns else latest_bmr
-
-        for col in ['calories', 'burned_calories', 'bmr']:
-            if col in df_bal.columns:
-                df_bal[col] = pd.to_numeric(df_bal[col], errors='coerce').fillna(0)
-
-        df_bal['total_burn'] = df_bal['bmr'] + df_bal['burned_calories']
-        df_bal['net'] = df_bal['calories'] - df_bal['total_burn']
-        df_bal = df_bal.sort_values('date')
-
-        latest_b = df_bal.iloc[-1]
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric("摂取カロリー", f"{latest_b['calories']:.0f} kcal")
-        b2.metric("基礎代謝", f"{latest_b['bmr']:.0f} kcal")
-        b3.metric("運動消費", f"{latest_b['burned_calories']:.0f} kcal")
-        b4.metric("収支 (摂取 - 総消費)", f"{latest_b['net']:.0f} kcal", delta=f"{latest_b['net']:.0f} kcal", delta_color="inverse")
-
-        st.plotly_chart(px.bar(df_bal, x='date', y=['calories', 'total_burn'], barmode='group', title="日別 カロリー比較 (kcal)"), use_container_width=True)
-    else:
-        st.info("データがまだありません。")
-
-# --- TAB 4: 体組成データ ---
-with tab4:
-    st.header("⚖️ タニタ体組成計 CSVアップロード")
-    tanita_file = st.file_uploader("タニタのCSVファイルをアップロード", type=["csv"])
-
-    if tanita_file:
-        try:
-            content = tanita_file.read()
-            try:
-                df_raw = pd.read_csv(io.BytesIO(content), encoding="shift_jis")
-            except Exception:
-                df_raw = pd.read_csv(io.BytesIO(content), encoding="utf-8")
-
-            col_map = {}
-            for c in df_raw.columns:
-                c_str = str(c).lower()
-                if "日付" in c_str or "date" in c_str or "測定日時" in c_str: col_map["date"] = c
-                elif "体重" in c_str or "weight" in c_str: col_map["weight"] = c
-                elif "体脂肪" in c_str or "fat" in c_str: col_map["body_fat"] = c
-                elif "筋肉" in c_str or "muscle" in c_str: col_map["muscle_mass"] = c
-                elif "基礎代謝" in c_str or "bmr" in c_str: col_map["bmr"] = c
-
-            if "date" in col_map and "weight" in col_map:
-                for _, row in df_raw.iterrows():
-                    d_val = str(row[col_map["date"]]).split(" ")[0]
-                    if d_val and pd.notnull(row[col_map["weight"]]):
-                        doc_ref = db.collection("body_composition").document(d_val)
-                        doc_ref.set({
-                            "date": d_val,
-                            "weight": float(row[col_map["weight"]]),
-                            "body_fat": float(row[col_map["body_fat"]]) if "body_fat" in col_map and pd.notnull(row[col_map["body_fat"]]) else None,
-                            "muscle_mass": float(row[col_map["muscle_mass"]]) if "muscle_mass" in col_map and pd.notnull(row[col_map["muscle_mass"]]) else None,
-                            "bmr": float(row[col_map["bmr"]]) if "bmr" in col_map and pd.notnull(row[col_map["bmr"]]) else None,
-                        }, merge=True)
-                st.success("🎉 Firestoreに体組成データを保存しました！")
-                st.rerun()
-        except Exception as e:
-            st.error(f"エラー: {e}")
-
-    b_docs = [d.to_dict() for d in db.collection("body_composition").get()]
-    if b_docs:
-        df_body = pd.DataFrame(b_docs).sort_values('date')
-        for col in ['weight', 'muscle_mass']:
-            if col in df_body.columns:
-                df_body[col] = pd.to_numeric(df_body[col], errors='coerce')
-        st.plotly_chart(px.line(df_body, x='date', y=['weight', 'muscle_mass'], title="体重・筋肉量の推移 (kg)", markers=True), use_container_width=True)
-
-# --- TAB 5: 前提条件・ログルール管理 ---
-with tab5:
-    st.header("⚙️ 食事・運動の前提ルール設定")
-    st.caption("ここで登録したルールや自家製レシピの仕様は、AI対話時に自動的に考慮されます。")
-
-    with st.expander("➕ 新しい前提ルール・レシピを追加する", expanded=True):
-        with st.form("add_rule_form", clear_on_submit=True):
-            rule_title = st.text_input("タイトル（例: 自家製無水カレー, ゆで卵）", placeholder="自家製無水カレー")
-            rule_detail = st.text_area("ルールの詳細（例: ノンオイル、ささみ/胸肉使用、スパイス仕込み）", 
-                                       placeholder="ノンオイルでささみ・胸肉を使用。スパイスから作成。1皿350kcal想定。")
+    st.markdown("### 秤 体組成データの推移 (体脂肪率・体脂肪量・骨格筋量)")
+    all_body_data = db.fetch_all_body_comp()
+    
+    if all_body_data:
+        df_body = pd.DataFrame(all_body_data)
+        df_body['date_dt'] = pd.to_datetime(df_body['date'])
+        df_body = df_body.sort_values('date_dt')
+        
+        if 'weight' in df_body.columns and 'body_fat' in df_body.columns:
+            df_body['fat_mass'] = df_body['weight'] * (df_body['body_fat'] / 100.0)
             
-            submit_rule = st.form_submit_button("ルールを保存")
-            if submit_rule:
-                if rule_title and rule_detail:
-                    save_user_rule(rule_title, rule_detail)
-                    st.success(f"ルール「{rule_title}」を保存しました！")
-                    st.rerun()
-                else:
-                    st.warning("タイトルと詳細の両方を入力してください。")
-
-    st.markdown("---")
-
-    st.subheader("📋 登録済みのルール一覧")
-    registered_rules = get_user_rules()
-
-    if registered_rules:
-        for r in registered_rules:
-            r_id = r["id"]
-            r_title = r.get("title", "無題")
-            r_detail = r.get("detail", "")
-
-            with st.container():
-                col_info, col_btn = st.columns([5, 1])
-                with col_info:
-                    st.markdown(f"**📌 {r_title}**")
-                    st.write(r_detail)
-                with col_btn:
-                    if st.button("削除", key=f"del_rule_{r_id}"):
-                        delete_user_rule(r_id)
-                        st.success("削除しました！")
-                        st.rerun()
-            st.divider()
+        fig_body = px.line(
+            df_body,
+            x='date',
+            y=['body_fat', 'fat_mass', 'muscle_mass'],
+            labels={
+                'date': '日付',
+                'value': '測定値',
+                'variable': '指標'
+            },
+            title="体組成データの経時変化 (※体重非表示)",
+            markers=True
+        )
+        
+        new_names = {
+            'body_fat': '体脂肪率 (%)',
+            'fat_mass': '体脂肪量 (kg)',
+            'muscle_mass': '骨格筋量 (kg)'
+        }
+        fig_body.for_each_trace(lambda t: t.update(name = new_names.get(t.name, t.name)))
+        
+        st.plotly_chart(fig_body, use_container_width=True)
     else:
-        st.info("登録されているルールはありません。")
+        st.info("体組成データがまだ登録されていません。「本日のデータ入力」タブからCSVをアップロードしてください。")
+
+# ---------------------------------------------------------
+# TAB 4: 過去1週間の推移
+# ---------------------------------------------------------
+with tab4:
+    st.subheader("📊 過去1週間の栄養摂取推移 (カロリー ＆ PFC)")
+    
+    today = date.today()
+    start_7d = today - timedelta(days=6)
+    
+    dates_7d = [(start_7d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    meals_7d = db.fetch_meals_range(start_7d.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
+    
+    daily_summary = []
+    goals = db.fetch_user_goals()
+    
+    for d_str in dates_7d:
+        day_meals = [m for m in meals_7d if m.get("date") == d_str]
+        c_sum = sum(m.get("calories", 0) for m in day_meals)
+        p_sum = sum(m.get("protein", 0) for m in day_meals)
+        f_sum = sum(m.get("fat", 0) for m in day_meals)
+        cb_sum = sum(m.get("carbs", 0) for m in day_meals)
+        
+        daily_summary.append({
+            "date": d_str,
+            "calories": c_sum,
+            "protein": p_sum,
+            "fat": f_sum,
+            "carbs": cb_sum
+        })
+        
+    df_7d = pd.DataFrame(daily_summary)
+    
+    fig_cal = px.bar(
+        df_7d,
+        x="date",
+        y="calories",
+        text_auto=".0f",
+        title="過去7日間の合計摂取カロリー推移",
+        labels={"date": "日付", "calories": "摂取カロリー (kcal)"}
+    )
+    fig_cal.add_hline(
+        y=goals.get("target_cal", 2200),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標カロリー ({int(goals.get('target_cal', 2200))} kcal)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_cal, use_container_width=True)
+    
+    st.divider()
+    
+    st.markdown("### 🥗 PFC別 摂取量推移")
+    
+    fig_p = px.bar(
+        df_7d,
+        x="date",
+        y="protein",
+        text_auto=".1f",
+        title="過去7日間の P (タンパク質) 摂取量推移 (g)",
+        labels={"date": "日付", "protein": "タンパク質 (g)"},
+        color_discrete_sequence=["#3b82f6"]
+    )
+    fig_p.add_hline(
+        y=goals.get("target_p", 160),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標 P ({int(goals.get('target_p', 160))} g)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_p, use_container_width=True)
+    
+    fig_f = px.bar(
+        df_7d,
+        x="date",
+        y="fat",
+        text_auto=".1f",
+        title="過去7日間の F (脂質) 摂取量推移 (g)",
+        labels={"date": "日付", "fat": "脂質 (g)"},
+        color_discrete_sequence=["#f59e0b"]
+    )
+    fig_f.add_hline(
+        y=goals.get("target_f", 50),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標 F ({int(goals.get('target_f', 50))} g)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_f, use_container_width=True)
+    
+    fig_c = px.bar(
+        df_7d,
+        x="date",
+        y="carbs",
+        text_auto=".1f",
+        title="過去7日間の C (炭水化物) 摂取量推移 (g)",
+        labels={"date": "日付", "carbs": "炭水化物 (g)"},
+        color_discrete_sequence=["#10b981"]
+    )
+    fig_c.add_hline(
+        y=goals.get("target_c", 250),
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"目標 C ({int(goals.get('target_c', 250))} g)",
+        annotation_position="top right"
+    )
+    st.plotly_chart(fig_c, use_container_width=True)
+
+# ---------------------------------------------------------
+# TAB 5: 設定
+# ---------------------------------------------------------
+with tab5:
+    st.subheader("⚙️ アプリ・目標設定")
+    st.write("サイドバーから目標マクロ（カロリー、PFC）を変更・保存できます。")
