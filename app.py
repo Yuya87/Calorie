@@ -91,7 +91,8 @@ with tab1:
     with col_h2:
         eng_status = st.radio("🇬🇧 英語学習", status_options, index=status_options.index(def_eng) if def_eng in status_options else 0, key="habit_eng")
     with col_h3:
-        rest_status = st.radio("🍺 休肝日", status_options, index=status_options.index(def_rest) if def_rest in status_options else 0, key="habit_rest")
+        # 休肝日のみ「未実施」を「飲酒」と表示（Firestoreへの保存値は「未実施」のまま）
+        rest_status = st.radio("🍺 休肝日", status_options, index=status_options.index(def_rest) if def_rest in status_options else 0, key="habit_rest", format_func=lambda s: "飲酒" if s == "未実施" else s)
         
     habit_memo = st.text_input("習慣メモ", value=def_memo, placeholder="今日の習慣に関するひとこと")
     
@@ -286,7 +287,8 @@ with tab2:
     col_sh1, col_sh2, col_sh3 = st.columns(3)
     col_sh1.write(f"🏋️ 運動: **{habit.get('gym', '未記録')}**")
     col_sh2.write(f"🇬🇧 英語: **{habit.get('english', '未記録')}**")
-    col_sh3.write(f"🍺 休肝日: **{habit.get('rest_day', '未記録')}**")
+    rest_label = habit.get('rest_day', '未記録')
+    col_sh3.write(f"🍺 休肝日: **{'飲酒' if rest_label == '未実施' else rest_label}**")
     
     st.markdown("---")
     st.markdown("### 食事明細")
