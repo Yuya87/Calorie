@@ -483,29 +483,29 @@ with tab1:
                     st.rerun()
 
     st.markdown("**🤖 新規食事の入力（AI解析）**")
-    if "meal_text_val" not in st.session_state:
-        st.session_state["meal_text_val"] = ""
-
-    meal_text = st.text_area("食事内容（時間帯の指定がない場合は現在の時間からAIが推測します）", value=st.session_state["meal_text_val"], placeholder="例: 昼食に丸の内のうなぎ屋で特上うな重を食べた。", key="meal_text_area")
     
-    is_out = st.checkbox("🍔 外食・会食として記録する", key="chk_is_out")
-    
-    rest_name, partners, out_comment = "", "", ""
-    if is_out:
-        st.markdown("##### 🍺 外食詳細情報")
+    # 食事入力全体をフォームで構造化（clear_on_submit=Trueでエラー防止）
+    with st.form("meal_input_ai_form", clear_on_submit=True):
+        meal_text = st.text_area(
+            "食事内容（時間帯の指定がない場合は現在の時間からAIが推測します）", 
+            placeholder="例: 昼食に丸の内のうなぎ屋で特上うな重を食べた。", 
+            key="meal_text_area"
+        )
+        
+        is_out = st.checkbox("🍔 外食・会食として記録する", key="chk_is_out")
+        
+        st.markdown("##### 🍺 外食詳細情報 (※「外食・会食として記録する」にチェック時)")
         m_col1, m_col2 = st.columns(2)
         rest_name = m_col1.text_input("店名・場所", key="input_rest_name")
         partners = m_col2.text_input("誰と（同行者）", key="input_partners")
         out_comment = st.text_input("外食に関するメモ・評価", key="input_out_comment")
 
-    if st.button("AIで解析して食事を保存", type="primary", key="btn_save_meal"):
+        submit_meal = st.form_submit_button("AIで解析して食事を保存", type="primary")
+
+    if submit_meal:
         if meal_text.strip():
             with st.spinner("AIが栄養素を解析中..."):
                 adv = parse_and_save_meal(meal_text, selected_date_str, is_out, rest_name, partners, out_comment)
-                st.session_state["meal_text_val"] = ""
-                st.session_state["input_rest_name"] = ""
-                st.session_state["input_partners"] = ""
-                st.session_state["input_out_comment"] = ""
                 st.success(f"保存完了: {adv}")
                 st.rerun()
         else:
@@ -545,16 +545,12 @@ with tab1:
                 st.rerun()
 
     st.markdown("**🤖 その他の運動記録（AI解析）**")
-    if "ex_text_val" not in st.session_state:
-        st.session_state["ex_text_val"] = ""
-
-    with st.form("exercise_ai_form"):
-        ex_text = st.text_area("その他の運動内容", value=st.session_state["ex_text_val"], placeholder="例: ベンチプレス 30分")
+    with st.form("exercise_ai_form", clear_on_submit=True):
+        ex_text = st.text_area("その他の運動内容", placeholder="例: ベンチプレス 30分")
         if st.form_submit_button("AIで解析して運動を保存"):
             if ex_text.strip():
                 with st.spinner("AIが消費カロリーを解析中..."):
                     adv = parse_and_save_exercise(ex_text, selected_date_str)
-                    st.session_state["ex_text_val"] = ""
                     st.success(f"保存完了: {adv}")
                     st.rerun()
             else:
@@ -569,13 +565,10 @@ with tab1:
 
     # 4. ジャーナリング入力
     st.subheader("📖 4. 本日のジャーナリング（振り返り）")
-    if "j_note_val" not in st.session_state:
-        st.session_state["j_note_val"] = exist_journal.get("note", "") if exist_journal else ""
-
-    with st.form("journal_input_form"):
+    with st.form("journal_input_form", clear_on_submit=True):
         j_note = st.text_area(
             "振り返り・体調・気づき", 
-            value=st.session_state["j_note_val"],
+            value=exist_journal.get("note", "") if exist_journal else "",
             height=100
         )
         if st.form_submit_button("ジャーナルを保存"):
@@ -583,7 +576,6 @@ with tab1:
                 with st.spinner("Geminiがフィードバックを生成中..."):
                     fb = generate_journal_feedback(j_note)
                     save_journal(selected_date_str, j_note, fb)
-                    st.session_state["j_note_val"] = ""
                     st.success("ジャーナルとAIフィードバックを保存しました！")
                     st.rerun()
             else:
