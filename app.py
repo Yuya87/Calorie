@@ -66,8 +66,8 @@ with tab1:
     st.subheader("📝 本日のデータ入力")
     
     # 日付選択
-    target_date = st.date_input("記録対象日", value=st.session_state["selected_date"])
-    st.session_state["selected_date"] = target_date
+    # key で session_state["selected_date"] と直接連動させる（value指定だと2回目以降の日付変更が無視される）
+    target_date = st.date_input("記録対象日", key="selected_date")
     date_str = target_date.strftime("%Y-%m-%d")
     weekday_str = ["月", "火", "水", "木", "金", "土", "日"][target_date.weekday()]
     st.info(f"選択中: {date_str} ({weekday_str})")
@@ -85,16 +85,17 @@ with tab1:
     def_rest = current_habit.get("rest_day", "未記録")
     def_memo = current_habit.get("memo", "")
 
+    # ウィジェットのkeyに日付を含め、記録対象日を変えたら登録済みデータで選択状態を作り直す
     col_h1, col_h2, col_h3 = st.columns(3)
     with col_h1:
-        gym_status = st.radio("🏋️ 筋トレ/運動", status_options, index=status_options.index(def_gym) if def_gym in status_options else 0, key="habit_gym")
+        gym_status = st.radio("🏋️ 筋トレ/運動", status_options, index=status_options.index(def_gym) if def_gym in status_options else 0, key=f"habit_gym_{date_str}")
     with col_h2:
-        eng_status = st.radio("🇬🇧 英語学習", status_options, index=status_options.index(def_eng) if def_eng in status_options else 0, key="habit_eng")
+        eng_status = st.radio("🇬🇧 英語学習", status_options, index=status_options.index(def_eng) if def_eng in status_options else 0, key=f"habit_eng_{date_str}")
     with col_h3:
         # 休肝日のみ「未実施」を「飲酒」と表示（Firestoreへの保存値は「未実施」のまま）
-        rest_status = st.radio("🍺 休肝日", status_options, index=status_options.index(def_rest) if def_rest in status_options else 0, key="habit_rest", format_func=lambda s: "飲酒" if s == "未実施" else s)
+        rest_status = st.radio("🍺 休肝日", status_options, index=status_options.index(def_rest) if def_rest in status_options else 0, key=f"habit_rest_{date_str}", format_func=lambda s: "飲酒" if s == "未実施" else s)
         
-    habit_memo = st.text_input("習慣メモ", value=def_memo, placeholder="今日の習慣に関するひとこと")
+    habit_memo = st.text_input("習慣メモ", value=def_memo, placeholder="今日の習慣に関するひとこと", key=f"habit_memo_{date_str}")
     
     if st.button("習慣化チェックインを保存"):
         db.save_daily_habit(date_str, gym_status, eng_status, rest_status, habit_memo)
@@ -123,7 +124,7 @@ with tab1:
                     st.success(f"『{rule_title}』を辞書に登録しました。")
                     st.rerun()
 
-    meal_type = st.selectbox("食事種別", ["朝食", "昼食", "夕食", "間食", "不明"])
+    meal_type = st.radio("食事種別", ["朝食", "昼食", "夕食", "間食", "不明"], index=4, horizontal=True)
     meal_text = st.text_area("食事内容（AI解析テキスト）", placeholder="例: ラーメンと餃子を食べた。ビールも1杯飲んだ。")
     
     is_eating_out = st.checkbox("外食・会食フラグ")
@@ -421,13 +422,13 @@ with tab3:
     st.plotly_chart(fig_heat, use_container_width=True)
     
     st.markdown("---")
-    st.markdown("### 体組成データの推移 (過去30日間)")
+    st.markdown("### 体組成データの推移 (全期間)")
     
     body_data = db.fetch_all_body_comp()
     if body_data:
         df_body = pd.DataFrame(body_data)
         if "date" in df_body.columns:
-            df_body = df_body[(df_body["date"] >= past_30_days[0]) & (df_body["date"] <= past_30_days[-1])].sort_values("date")
+            df_body = df_body.sort_values("date")
             
             # 体重は非表示にし、体脂肪率・体脂肪量・骨格筋量を表示
             if "weight" in df_body.columns and "body_fat" in df_body.columns:
@@ -444,7 +445,7 @@ with tab3:
         else:
             st.caption("体組成データの日付フォーマットを確認してください。")
     else:
-        st.caption("過去30日間の体組成データがありません。")
+        st.caption("体組成データがありません。")
 
 # ==============================================================================
 # TAB 4: 過去1週間の推移
@@ -476,12 +477,20 @@ with tab4:
     fig_cal.add_hline(y=default_cal, line_dash="dash", line_color="red", annotation_text="目標カロリー")
     st.plotly_chart(fig_cal, use_container_width=True)
     
-    # PFC推移
-    fig_pfc = px.line(df_7days, x="date", y=["protein", "fat", "carbs"], markers=True, title="過去7日間のPFC推移 (g)")
-    fig_pfc.add_hline(y=default_p, line_dash="dash", line_color="blue", annotation_text="目標P")
-    fig_pfc.add_hline(y=default_f, line_dash="dash", line_color="green", annotation_text="目標F")
-    fig_pfc.add_hline(y=default_c, line_dash="dash", line_color="orange", annotation_text="目標C")
-    st.plotly_chart(fig_pfc, use_container_width=True)
+    # PFC推移（栄養素ごとに別グラフ・棒グラフ＋目標線）
+    pfc_items = [
+        ("protein", "タンパク質 P", default_p, "#2563eb"),
+        ("fat", "脂質 F", default_f, "#16a34a"),
+        ("carbs", "炭水化物 C", default_c, "#ea580c"),
+    ]
+    pfc_cols = st.columns(3)
+    for col, (field, label, target, color) in zip(pfc_cols, pfc_items):
+        fig_nutrient = px.bar(df_7days, x="date", y=field, title=f"過去7日間の{label} (g)",
+                              color_discrete_sequence=[color])
+        fig_nutrient.add_hline(y=target, line_dash="dash", line_color="red", annotation_text=f"目標 {target:.0f}g")
+        fig_nutrient.update_layout(xaxis_title=None, yaxis_title="g")
+        with col:
+            st.plotly_chart(fig_nutrient, use_container_width=True)
 
 # ==============================================================================
 # TAB 5: 設定
