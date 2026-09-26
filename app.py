@@ -320,7 +320,9 @@ with tab2:
         for idx, row in df_meals.iterrows():
             col_m1, col_m2, col_m3, col_m4 = st.columns([2, 4, 2, 2])
             col_m1.write(f"**[{row.get('meal_type')}]**")
-            col_m2.write(f"{row.get('food_name')} ({row.get('calories', 0):.0f} kcal)")
+            # 欠損（古いデータ等でフィールドが無い場合のNaN）は0として表示
+            nutr = {k: (0.0 if pd.isna(row.get(k)) else float(row.get(k))) for k in ["calories", "protein", "fat", "carbs"]}
+            col_m2.write(f"{row.get('food_name')} ({nutr['calories']:.0f} kcal / P {nutr['protein']:.1f}g・F {nutr['fat']:.1f}g・C {nutr['carbs']:.1f}g)")
             
             doc_id = row.get("doc_id")
             
