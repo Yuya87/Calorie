@@ -1,0 +1,9 @@
+# Streamlit secrets (Firestore service account, Gemini API key, etc.)
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
