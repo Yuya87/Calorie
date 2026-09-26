@@ -143,7 +143,7 @@ with tab1:
             with st.spinner("Geminiが栄養素を解析中..."):
                 dict_rules = db.fetch_user_rules()
                 analysis = ai.analyze_meal_text(meal_text, dict_rules)
-                
+            if analysis:
                 # Firestoreへ保存データの整形
                 meal_record = {
                     "date": date_str,
@@ -160,10 +160,24 @@ with tab1:
                     "eating_out_comment": eating_out_comment
                 }
                 db.save_meal_record(meal_record)
-                st.success("食事ログを解析・保存しました！")
+
+                # 当日＋直近3日の食事を踏まえたフィードバック（画面表示のみ・保存しない）
+                with st.spinner("Geminiがコメントを考え中..."):
+                    start_str = (target_date - timedelta(days=3)).strftime("%Y-%m-%d")
+                    recent_meals = db.fetch_meals_range(start_str, date_str)
+                    feedback = ai.generate_meal_feedback(date_str, meal_record, recent_meals, latest_goal or {})
+                st.session_state["meal_feedback"] = {"date": date_str, "text": feedback}
+                st.session_state["meal_saved_msg"] = True
                 st.rerun()
         else:
             st.warning("食事内容を入力してください。")
+
+    if st.session_state.pop("meal_saved_msg", False):
+        st.success("食事ログを解析・保存しました！")
+    meal_fb = st.session_state.get("meal_feedback")
+    if meal_fb and meal_fb.get("date") == date_str and meal_fb.get("text"):
+        st.markdown("#### 🍽️ コーチからのひとこと")
+        st.info(meal_fb["text"])
 
     st.markdown("---")
 
@@ -186,6 +200,7 @@ with tab1:
         if exercise_text:
             with st.spinner("Geminiが消費カロリーを解析中..."):
                 analysis = ai.analyze_exercise_text(exercise_text)
+            if analysis:
                 ex_record = {
                     "date": date_str,
                     "exercise_name": analysis.get("exercise_name", exercise_text),
