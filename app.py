@@ -376,16 +376,27 @@ with tab3:
     fig_heat = px.imshow(
         df_heatmap,
         labels=dict(x="日付", y="習慣", color="達成度"),
-        x=past_30_days,
+        x=[d[5:].replace("-", "/") for d in past_30_days],  # MM/DD 表記
         y=["運動", "英語学習", "休肝日"],
-        color_continuous_scale=["#ebedf0", "#c6e48b", "#7bc96f", "#239a3b"],
+        # 未記録=薄いグレー / 未実施(飲酒)=グレー / 一応やった=薄い青 / 目標達成=濃い青
+        color_continuous_scale=[
+            [0.0, "#ebedf0"], [0.25, "#ebedf0"],
+            [0.25, "#9ca3af"], [0.5, "#9ca3af"],
+            [0.5, "#93c5fd"], [0.75, "#93c5fd"],
+            [0.75, "#1d4ed8"], [1.0, "#1d4ed8"],
+        ],
+        zmin=-0.5, zmax=3.5,
         aspect="equal"  # アスペクト比の均等設定
     )
     
-    # セルを正方形に固定・レイアウト最適化
+    # セル間に縦横の隙間を入れる
+    fig_heat.update_traces(xgap=3, ygap=3)
+    
+    # セルを正方形に固定・レイアウト最適化（日付をカテゴリ軸にしないと正方形指定が効かない）
     fig_heat.update_yaxes(scaleanchor="x", scaleratio=1)
     fig_heat.update_layout(
-        xaxis=dict(tickangle=-45, showgrid=False),
+        xaxis=dict(type="category", tickangle=-45, showgrid=False),
+        height=280,
         yaxis=dict(showgrid=False),
         coloraxis_showscale=False,
         margin=dict(l=20, r=20, t=30, b=30),
