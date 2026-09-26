@@ -421,11 +421,16 @@ with tab3:
         matrix_data.append(row_scores)
         text_matrix.append(row_texts)
         
+    # ステータス別カラーマップ設定
+    # 0 (未記録): #f3f4f6 (ライトグレー)
+    # 1 (未実施): #9ca3af (濃いめのグレー)
+    # 2 (一応やった): #93c5fd (薄い青)
+    # 3 (目標達成): #1d4ed8 (青)
     colorscale = [
-        [0.0, "#f3f4f6"],  # 未記録
-        [0.33, "#93c5fd"], # 未実施
-        [0.66, "#3b82f6"], # 一応やった
-        [1.0, "#1d4ed8"]   # 目標達成
+        [0.0, "#f3f4f6"],
+        [0.33, "#9ca3af"],
+        [0.66, "#93c5fd"],
+        [1.0, "#1d4ed8"]
     ]
     
     fig_heatmap = px.imshow(
@@ -434,7 +439,7 @@ with tab3:
         y=items,
         color_continuous_scale=colorscale,
         range_color=[0, 3],
-        aspect="auto",
+        aspect="equal",  # セルの形状を正方形に指定
         title="過去30日間の習慣達成結果"
     )
     fig_heatmap.update_traces(
