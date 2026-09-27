@@ -1,4 +1,5 @@
 import json
+import threading
 import uuid
 import streamlit as st
 from google.cloud import firestore, storage
@@ -9,36 +10,52 @@ from firestore_db import db
 
 # ---------------------------------------------------------
 # Cloud Storage 初期化（音声ファイルの保存先）
+# 接続に失敗した結果は保持せず、次回の呼び出しで再接続する
+# （st.cache_resource で失敗を保持すると、Secrets を直してもアプリ再起動まで復旧しないため）。
+# スピーチ保存のバックグラウンドスレッドからも呼ばれるため、この関数内では st.* の表示関数を呼ばない。
 # ---------------------------------------------------------
-@st.cache_resource
-def init_storage_bucket():
-    """GCS バケットの初期化。バケット名は st.secrets["ENGLISH_AUDIO_BUCKET"] で指定"""
-    try:
+_bucket = None
+_bucket_lock = threading.Lock()
+
+def get_bucket():
+    """GCS バケットを返す。バケット名は st.secrets["ENGLISH_AUDIO_BUCKET"]。失敗時は RuntimeError（原因を含む）"""
+    global _bucket
+    with _bucket_lock:
+        if _bucket is not None:
+            return _bucket
         bucket_name = st.secrets.get("ENGLISH_AUDIO_BUCKET", None)
         if not bucket_name:
-            st.error("⚠️ Secrets に ENGLISH_AUDIO_BUCKET（音声保存用バケット名）を設定してください。")
-            return None
-        if "gcp_service_account" in st.secrets:
-            secret_val = st.secrets["gcp_service_account"]
-            key_dict = json.loads(secret_val) if isinstance(secret_val, str) else dict(secret_val)
-            if "private_key" in key_dict and isinstance(key_dict["private_key"], str):
-                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-            creds = service_account.Credentials.from_service_account_info(key_dict)
-            client = storage.Client(credentials=creds, project=key_dict.get("project_id"))
-        else:
-            client = storage.Client()
-        return client.bucket(bucket_name)
-    except Exception as e:
-        st.error(f"⚠️ Cloud Storage初期化エラー: {e}")
-        return None
+            raise RuntimeError(
+                "Secrets に ENGLISH_AUDIO_BUCKET（音声保存用バケット名）が見つかりません。"
+                "[gcp_service_account] などの見出しより上（Secretsの先頭）に書いてください。"
+            )
+        try:
+            if "gcp_service_account" in st.secrets:
+                secret_val = st.secrets["gcp_service_account"]
+                key_dict = json.loads(secret_val) if isinstance(secret_val, str) else dict(secret_val)
+                if "private_key" in key_dict and isinstance(key_dict["private_key"], str):
+                    key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+                creds = service_account.Credentials.from_service_account_info(key_dict)
+                client = storage.Client(credentials=creds, project=key_dict.get("project_id"))
+            else:
+                client = storage.Client()
+            _bucket = client.bucket(bucket_name)
+            return _bucket
+        except Exception as e:
+            raise RuntimeError(f"Cloud Storage の初期化に失敗しました: {e}") from e
 
-bucket = init_storage_bucket()
+def storage_error():
+    """Cloud Storage が使えない場合はその理由、使える場合は None（画面表示用）"""
+    try:
+        get_bucket()
+        return None
+    except RuntimeError as e:
+        return str(e)
 
 def upload_audio(date_str, audio_bytes, ext, content_type):
     """音声をアップロードし、バケット内のパスを返す。失敗時は RuntimeError
     （スピーチ保存処理の途中で呼ばれるため st.* は呼ばない）"""
-    if not bucket:
-        raise RuntimeError("音声の保存先（Cloud Storage）が利用できません。ENGLISH_AUDIO_BUCKET を確認してください。")
+    bucket = get_bucket()
     try:
         path = f"english_speeches/{date_str}_{uuid.uuid4().hex[:8]}.{ext}"
         bucket.blob(path).upload_from_string(audio_bytes, content_type=content_type)
@@ -46,23 +63,31 @@ def upload_audio(date_str, audio_bytes, ext, content_type):
     except Exception as e:
         raise RuntimeError(f"音声のアップロードに失敗しました: {e}") from e
 
+def delete_audio_quietly(path):
+    """音声を削除（失敗しても例外を出さない。バックグラウンドスレッドから呼ぶ用）"""
+    try:
+        get_bucket().blob(path).delete()
+    except Exception:
+        pass
+
 @st.cache_data(show_spinner=False, max_entries=20)
 def download_audio(path):
     """音声を取得（再生・ダウンロード用）。失敗時は None"""
-    if not bucket or not path:
+    if not path:
         return None
     try:
-        return bucket.blob(path).download_as_bytes()
+        return get_bucket().blob(path).download_as_bytes()
     except Exception as e:
         st.error(f"音声の取得に失敗しました: {e}")
         return None
 
 def delete_audio(path):
-    if bucket and path:
-        try:
-            bucket.blob(path).delete()
-        except Exception as e:
-            st.warning(f"音声ファイルの削除に失敗しました: {e}")
+    if not path:
+        return
+    try:
+        get_bucket().blob(path).delete()
+    except Exception as e:
+        st.warning(f"音声ファイルの削除に失敗しました: {e}")
 
 # ---------------------------------------------------------
 # 勉強ログ (english_study_logs)
