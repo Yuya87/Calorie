@@ -20,6 +20,29 @@ st.set_page_config(
 if "selected_date" not in st.session_state:
     st.session_state["selected_date"] = date.today()
 
+# 登録成功後に入力欄をクリアするためのウィジェットkey
+# （ウィジェット生成前にkeyを削除すると初期値に戻る。生成後の値変更はエラーになるため、フラグ＋rerunで次回描画時に削除する）
+MEAL_INPUT_KEYS = ["meal_type", "meal_text", "is_eating_out", "restaurant_name", "dining_partners", "eating_out_comment"]
+EXERCISE_INPUT_KEYS = ["exercise_text"]
+
+def clear_inputs(flag_key, widget_keys):
+    if st.session_state.pop(flag_key, False):
+        for k in widget_keys:
+            st.session_state.pop(k, None)
+
+# ------------------------------------------------------------------------------
+# スマホ向けのコンパクト表示（上部余白の削減・タイトル縮小）
+# ------------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 2.5rem; }
+    .app-title { font-size: 1.4rem; font-weight: 700; margin: 0 0 0.25rem 0; line-height: 1.3; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # ------------------------------------------------------------------------------
 # サイドバー: 目標設定
 # ------------------------------------------------------------------------------
@@ -49,7 +72,7 @@ with st.sidebar.form("goals_form"):
 # ------------------------------------------------------------------------------
 # メイン画面 タブ構成
 # ------------------------------------------------------------------------------
-st.title("🏋️‍♂️ AI Body Make & Habit Tracker")
+st.markdown('<p class="app-title">🏋️‍♂️ AI Body Make & Habit Tracker</p>', unsafe_allow_html=True)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📝 本日のデータ入力",
@@ -86,14 +109,11 @@ with tab1:
     def_memo = current_habit.get("memo", "")
 
     # ウィジェットのkeyに日付を含め、記録対象日を変えたら登録済みデータで選択状態を作り直す
-    col_h1, col_h2, col_h3 = st.columns(3)
-    with col_h1:
-        gym_status = st.radio("🏋️ 筋トレ/運動", status_options, index=status_options.index(def_gym) if def_gym in status_options else 0, key=f"habit_gym_{date_str}")
-    with col_h2:
-        eng_status = st.radio("🇬🇧 英語学習", status_options, index=status_options.index(def_eng) if def_eng in status_options else 0, key=f"habit_eng_{date_str}")
-    with col_h3:
-        # 休肝日のみ「未実施」を「飲酒」と表示（Firestoreへの保存値は「未実施」のまま）
-        rest_status = st.radio("🍺 休肝日", status_options, index=status_options.index(def_rest) if def_rest in status_options else 0, key=f"habit_rest_{date_str}", format_func=lambda s: "飲酒" if s == "未実施" else s)
+    # スマホでも見やすいよう、各習慣を1行ずつ・選択肢は横並びで表示
+    gym_status = st.radio("🏋️ 筋トレ/運動", status_options, index=status_options.index(def_gym) if def_gym in status_options else 0, key=f"habit_gym_{date_str}", horizontal=True)
+    eng_status = st.radio("🇬🇧 英語学習", status_options, index=status_options.index(def_eng) if def_eng in status_options else 0, key=f"habit_eng_{date_str}", horizontal=True)
+    # 休肝日のみ「未実施」を「飲酒」と表示（Firestoreへの保存値は「未実施」のまま）
+    rest_status = st.radio("🍺 休肝日", status_options, index=status_options.index(def_rest) if def_rest in status_options else 0, key=f"habit_rest_{date_str}", format_func=lambda s: "飲酒" if s == "未実施" else s, horizontal=True)
         
     habit_memo = st.text_input("習慣メモ", value=def_memo, placeholder="今日の習慣に関するひとこと", key=f"habit_memo_{date_str}")
     
@@ -124,20 +144,23 @@ with tab1:
                     st.success(f"『{rule_title}』を辞書に登録しました。")
                     st.rerun()
 
-    meal_type = st.radio("食事種別", ["朝食", "昼食", "夕食", "間食", "不明"], index=4, horizontal=True)
-    meal_text = st.text_area("食事内容（AI解析テキスト）", placeholder="例: ラーメンと餃子を食べた。ビールも1杯飲んだ。")
+    # 前回の保存が成功していれば入力欄を初期状態に戻す
+    clear_inputs("clear_meal_inputs", MEAL_INPUT_KEYS)
+
+    meal_type = st.radio("食事種別", ["朝食", "昼食", "夕食", "間食", "不明"], index=4, horizontal=True, key="meal_type")
+    meal_text = st.text_area("食事内容（AI解析テキスト）", placeholder="例: ラーメンと餃子を食べた。ビールも1杯飲んだ。", key="meal_text")
     
-    is_eating_out = st.checkbox("外食・会食フラグ")
+    is_eating_out = st.checkbox("外食・会食フラグ", key="is_eating_out")
     restaurant_name = ""
     dining_partners = ""
     eating_out_comment = ""
     if is_eating_out:
         col_m1, col_m2 = st.columns(2)
         with col_m1:
-            restaurant_name = st.text_input("店名・場所")
+            restaurant_name = st.text_input("店名・場所", key="restaurant_name")
         with col_m2:
-            dining_partners = st.text_input("同行者")
-        eating_out_comment = st.text_input("外食メモ・評価")
+            dining_partners = st.text_input("同行者", key="dining_partners")
+        eating_out_comment = st.text_input("外食メモ・評価", key="eating_out_comment")
 
     if st.button("AIで解析して食事ログを保存"):
         if meal_text:
@@ -169,6 +192,7 @@ with tab1:
                     feedback = ai.generate_meal_feedback(date_str, meal_record, recent_meals, latest_goal or {})
                 st.session_state["meal_feedback"] = {"date": date_str, "text": feedback}
                 st.session_state["meal_saved_msg"] = True
+                st.session_state["clear_meal_inputs"] = True
                 st.rerun()
         else:
             st.warning("食事内容を入力してください。")
@@ -196,7 +220,10 @@ with tab1:
         st.success("傾斜ウォーキングを記録しました！")
         st.rerun()
         
-    exercise_text = st.text_input("運動内容（AI解析テキスト）", placeholder="例: ベンチプレス 45分、ジョギング 20分")
+    # 前回の保存が成功していれば入力欄を初期状態に戻す
+    clear_inputs("clear_exercise_inputs", EXERCISE_INPUT_KEYS)
+
+    exercise_text = st.text_input("運動内容（AI解析テキスト）", placeholder="例: ベンチプレス 45分、ジョギング 20分", key="exercise_text")
     if st.button("AIで解析して運動ログを保存"):
         if exercise_text:
             with st.spinner("Geminiが消費カロリーを解析中..."):
@@ -209,8 +236,12 @@ with tab1:
                     "burned_calories": float(analysis.get("burned_calories", 0.0))
                 }
                 db.save_exercise_record(ex_record)
-                st.success("運動ログを解析・保存しました！")
+                st.session_state["exercise_saved_msg"] = True
+                st.session_state["clear_exercise_inputs"] = True
                 st.rerun()
+
+    if st.session_state.pop("exercise_saved_msg", False):
+        st.success("運動ログを解析・保存しました！")
 
     st.markdown("---")
 
