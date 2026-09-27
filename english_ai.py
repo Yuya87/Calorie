@@ -2,18 +2,20 @@ import json
 import os
 import subprocess
 import tempfile
-import streamlit as st
 from google.genai import types
 import imageio_ffmpeg
 
 # Gemini クライアント・モデルは Body Make アプリと共通のものを流用する
 from ai_services import ai_client, MODEL_NAME
 
+# ※ このモジュールの関数は Streamlit の表示関数を呼ばない（失敗時は例外を送出する）。
+#   処理中に st.* を呼ぶと、その時点で再実行の割り込みを受けて保存前に処理が打ち切られることがあるため。
+
 # ---------------------------------------------------------
 # 音声変換（ボイスメモ m4a 等 → Gemini が確実に扱える WAV 16kHz モノラル）
 # ---------------------------------------------------------
 def convert_to_wav(audio_bytes, ext):
-    """音声を WAV (16kHz / mono) に変換して返す。失敗時は None"""
+    """音声を WAV (16kHz / mono) に変換して返す。失敗時は RuntimeError"""
     src_path = dst_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as src:
@@ -27,9 +29,10 @@ def convert_to_wav(audio_bytes, ext):
         )
         with open(dst_path, "rb") as f:
             return f.read()
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"音声の変換に失敗しました: {e.stderr.decode(errors='ignore')[:300]}") from e
     except Exception as e:
-        st.error(f"音声の変換に失敗しました: {e}")
-        return None
+        raise RuntimeError(f"音声の変換に失敗しました: {e}") from e
     finally:
         for p in (src_path, dst_path):
             if p and os.path.exists(p):
@@ -62,15 +65,12 @@ def _format_past_speeches(past_speeches):
     return "\n".join(lines) if lines else "（過去のスピーチなし）"
 
 def analyze_speech(wav_bytes, past_speeches=None):
-    """1分スピーチの音声を分析し、結果dictを返す。失敗時は None
+    """1分スピーチの音声を分析し、結果dictを返す。失敗時は RuntimeError
 
     past_speeches: 比較用の過去スピーチ（date / transcript / scores を持つdictのリスト）
     """
     if not ai_client:
-        st.error("⚠️ Gemini API が利用できません。GEMINI_API_KEY を確認してください。")
-        return None
-    if not wav_bytes:
-        return None
+        raise RuntimeError("Gemini API が利用できません。GEMINI_API_KEY を確認してください。")
 
     prompt = f"""
 あなたは経験豊富な英語スピーキングコーチです。
@@ -117,5 +117,4 @@ def analyze_speech(wav_bytes, past_speeches=None):
         result["growth_comment"] = (result.get("growth_comment") or "").strip()
         return result
     except Exception as e:
-        st.error(f"スピーチの分析に失敗しました: {e}")
-        return None
+        raise RuntimeError(f"スピーチの分析に失敗しました: {e}") from e
