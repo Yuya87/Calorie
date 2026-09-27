@@ -183,6 +183,8 @@ Streamlit Community Cloud では別アプリとしてデプロイし、Secrets �
   通常の処理で分析すると、スマホの画面スリープ・再接続などで再実行が割り込んだ際に、エラーも出ずに結果の保存・表示が失われるため。
   スレッド内で動く `process_speech` / `english_ai` / `edb.upload_audio` / `edb.save_speech` では `st.*` の表示関数を呼ばない（失敗時は例外を送出）。
 - 1分スピーチタブの分析結果は、セッションの結果がなければ今週保存済みの最新スピーチを表示する
+- Cloud Storage のバケット接続（`english_db.get_bucket`）は、成功時のみ保持し失敗は保持しない（`st.cache_resource` で失敗を保持すると Secrets 修正後もアプリ再起動まで復旧しないため）。接続できない場合は1分スピーチタブの先頭に原因を表示する
+- Secrets の `ENGLISH_AUDIO_BUCKET` など単独のキーは `[gcp_service_account]` などの見出しより上に書く（見出しより下に書くとその見出しの項目として扱われる）
 - 画面スタイル（タイトル縮小・見出し縮小・横並びラジオの間隔）は Body Make アプリと揃える
 
 ---

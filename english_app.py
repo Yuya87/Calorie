@@ -159,10 +159,7 @@ def process_speech(audio_bytes, filename, speech_date_str, past_speeches):
         edb.save_speech(speech_record)
     except RuntimeError:
         # 分析結果を保存できなかった場合は、アップロード済みの音声を残さない
-        try:
-            edb.bucket.blob(audio_path).delete()
-        except Exception:
-            pass
+        edb.delete_audio_quietly(audio_path)
         raise
     return speech_record
 
@@ -320,6 +317,11 @@ with tab1:
 # ==============================================================================
 with tab2:
     st.subheader("🎤 1分スピーチ")
+
+    # 音声の保存先に接続できない場合は、分析前に原因を表示する（Secrets を直せば次の表示で再接続される）
+    storage_err = edb.storage_error()
+    if storage_err:
+        st.error(f"⚠️ {storage_err}")
 
     speeches = edb.fetch_all_speeches()
     this_week = week_start(today_jst())
