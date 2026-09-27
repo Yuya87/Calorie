@@ -35,16 +35,16 @@ def init_storage_bucket():
 bucket = init_storage_bucket()
 
 def upload_audio(date_str, audio_bytes, ext, content_type):
-    """音声をアップロードし、バケット内のパスを返す。失敗時は None"""
+    """音声をアップロードし、バケット内のパスを返す。失敗時は RuntimeError
+    （スピーチ保存処理の途中で呼ばれるため st.* は呼ばない）"""
     if not bucket:
-        return None
+        raise RuntimeError("音声の保存先（Cloud Storage）が利用できません。ENGLISH_AUDIO_BUCKET を確認してください。")
     try:
         path = f"english_speeches/{date_str}_{uuid.uuid4().hex[:8]}.{ext}"
         bucket.blob(path).upload_from_string(audio_bytes, content_type=content_type)
         return path
     except Exception as e:
-        st.error(f"音声のアップロードに失敗しました: {e}")
-        return None
+        raise RuntimeError(f"音声のアップロードに失敗しました: {e}") from e
 
 @st.cache_data(show_spinner=False, max_entries=20)
 def download_audio(path):
@@ -131,9 +131,13 @@ def fetch_all_speeches():
         return []
 
 def save_speech(speech_data):
-    if db:
-        speech_data["created_at"] = firestore.SERVER_TIMESTAMP
-        db.collection("english_speeches").add(speech_data)
+    """スピーチを保存。失敗時は RuntimeError（保存処理の途中で呼ばれるため st.* は呼ばない）"""
+    if not db:
+        raise RuntimeError("Firestore が利用できません。")
+    try:
+        db.collection("english_speeches").add(dict(speech_data, created_at=firestore.SERVER_TIMESTAMP))
+    except Exception as e:
+        raise RuntimeError(f"スピーチの保存に失敗しました: {e}") from e
 
 def delete_speech(doc_id, audio_path):
     """スピーチの記録と音声ファイルを削除"""

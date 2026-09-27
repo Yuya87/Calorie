@@ -1,3 +1,6 @@
+import threading
+import time
+import uuid
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -129,6 +132,101 @@ def render_speech_result(sp):
         with st.expander("✨ 自然な英語に直したスピーチ全文"):
             st.write(sp["natural_version"])
 
+def process_speech(audio_bytes, filename, speech_date_str, past_speeches):
+    """変換→分析→音声アップロード→Firestore保存を行い、保存したレコードを返す。
+
+    バックグラウンドスレッドで実行するため、この関数内では Streamlit の表示関数を呼ばない。
+    失敗時は RuntimeError を送出する。
+    """
+    ext = filename.rsplit(".", 1)[-1].lower()
+    content_type = AUDIO_TYPES.get(ext, "application/octet-stream")
+    wav_bytes = eai.convert_to_wav(audio_bytes, ext)
+    result = eai.analyze_speech(wav_bytes, past_speeches)
+    audio_path = edb.upload_audio(speech_date_str, audio_bytes, ext, content_type)
+    speech_record = {
+        "date": speech_date_str,
+        "audio_path": audio_path,
+        "audio_content_type": content_type,
+        "original_filename": filename,
+        "transcript": result.get("transcript", ""),
+        "natural_version": result.get("natural_version", ""),
+        "suggestions": result.get("suggestions", []),
+        "scores": result.get("scores", {}),
+        "overall_comment": result.get("overall_comment", ""),
+        "growth_comment": result.get("growth_comment", ""),
+    }
+    try:
+        edb.save_speech(speech_record)
+    except RuntimeError:
+        # 分析結果を保存できなかった場合は、アップロード済みの音声を残さない
+        try:
+            edb.bucket.blob(audio_path).delete()
+        except Exception:
+            pass
+        raise
+    return speech_record
+
+# ------------------------------------------------------------------------------
+# スピーチ分析のバックグラウンド実行
+# 分析には1分ほどかかり、その間にスマホの画面スリープ・再接続などで画面の再実行が割り込むと、
+# 通常の処理では結果の保存・表示が失われる。そこで分析はスレッドで実行し、画面は結果を数秒ごとに確認する。
+# ------------------------------------------------------------------------------
+@st.cache_resource
+def speech_jobs():
+    """実行中・完了したスピーチ分析ジョブ（プロセス全体で共有）: job_id -> 状態dict"""
+    return {}
+
+JOB_TIMEOUT_SEC = 600
+
+def start_speech_job(audio_bytes, filename, speech_date_str, past_speeches):
+    jobs = speech_jobs()
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {"status": "running", "started": time.time(), "date": speech_date_str}
+
+    def run():
+        try:
+            jobs[job_id]["record"] = process_speech(audio_bytes, filename, speech_date_str, past_speeches)
+            jobs[job_id]["status"] = "done"
+        except Exception as e:
+            jobs[job_id]["error"] = str(e)
+            jobs[job_id]["status"] = "error"
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
+
+def running_job_id():
+    """このセッションのジョブ、なければ（画面の再読み込み等でセッションが変わった場合に備え）実行中の最新ジョブ"""
+    jobs = speech_jobs()
+    # 結果を受け取られないまま残った古いジョブを片付ける
+    for jid in [jid for jid, j in jobs.items() if time.time() - j["started"] > JOB_TIMEOUT_SEC and j["status"] != "running"]:
+        jobs.pop(jid, None)
+    job_id = st.session_state.get("speech_job")
+    if job_id in jobs:
+        return job_id
+    running = [(j["started"], jid) for jid, j in jobs.items()
+               if j["status"] == "running" and time.time() - j["started"] < JOB_TIMEOUT_SEC]
+    return max(running)[1] if running else None
+
+@st.fragment(run_every=3)
+def speech_job_status(job_id):
+    """実行中のジョブの進み具合を3秒ごとに確認し、終わったら画面全体を更新する"""
+    job = speech_jobs().get(job_id)
+    if not job:
+        return
+    if job["status"] == "running":
+        elapsed = int(time.time() - job["started"])
+        st.info(f"⏳ Geminiがスピーチを分析・保存中...（{elapsed}秒経過。1分ほどかかります）")
+        return
+    # 完了・失敗: 結果をセッションに移して画面全体を更新
+    speech_jobs().pop(job_id, None)
+    st.session_state.pop("speech_job", None)
+    if job["status"] == "done":
+        st.session_state["latest_speech"] = job["record"]
+        st.session_state["en_uploader_ver"] += 1
+    else:
+        st.session_state["speech_job_error"] = job.get("error", "不明なエラー")
+    st.rerun(scope="app")
+
 def pick_past_speeches(speeches, speech_date_str):
     """比較用の過去スピーチ: 直近4回＋約3か月前に最も近い1回"""
     past = [s for s in speeches if s.get("date", "") < speech_date_str]
@@ -244,36 +342,24 @@ with tab2:
     if uploaded:
         st.audio(uploaded)
 
-    if st.button("AIで分析して保存", disabled=uploaded is None):
-        ext = uploaded.name.rsplit(".", 1)[-1].lower()
-        audio_bytes = uploaded.getvalue()
-        with st.spinner("音声を変換中..."):
-            wav_bytes = eai.convert_to_wav(audio_bytes, ext)
-        if wav_bytes:
-            with st.spinner("Geminiがスピーチを分析中...（数十秒かかります）"):
-                result = eai.analyze_speech(wav_bytes, pick_past_speeches(speeches, speech_date_str))
-            if result:
-                with st.spinner("音声を保存中..."):
-                    audio_path = edb.upload_audio(speech_date_str, audio_bytes, ext, AUDIO_TYPES.get(ext, "application/octet-stream"))
-                if audio_path:
-                    speech_record = {
-                        "date": speech_date_str,
-                        "audio_path": audio_path,
-                        "audio_content_type": AUDIO_TYPES.get(ext, "application/octet-stream"),
-                        "original_filename": uploaded.name,
-                        "transcript": result.get("transcript", ""),
-                        "natural_version": result.get("natural_version", ""),
-                        "suggestions": result.get("suggestions", []),
-                        "scores": result.get("scores", {}),
-                        "overall_comment": result.get("overall_comment", ""),
-                        "growth_comment": result.get("growth_comment", ""),
-                    }
-                    edb.save_speech(speech_record)
-                    st.session_state["latest_speech"] = speech_record
-                    st.session_state["en_uploader_ver"] += 1
-                    st.rerun()
+    job_id = running_job_id()
+    if st.button("AIで分析して保存", disabled=uploaded is None or job_id is not None):
+        st.session_state.pop("latest_speech", None)
+        st.session_state["speech_job"] = start_speech_job(
+            uploaded.getvalue(), uploaded.name, speech_date_str, pick_past_speeches(speeches, speech_date_str)
+        )
+        st.rerun()
 
+    if job_id:
+        speech_job_status(job_id)
+    if "speech_job_error" in st.session_state:
+        st.error(st.session_state.pop("speech_job_error"))
+
+    # 直前の分析結果。画面の再読み込み等でセッションの結果が失われた場合は、今週保存済みの最新スピーチを表示する
     latest = st.session_state.get("latest_speech")
+    if not latest:
+        this_week_speeches = [s for s in speeches if s.get("date", "") >= this_week.strftime("%Y-%m-%d")]
+        latest = this_week_speeches[-1] if this_week_speeches else None
     if latest:
         st.markdown("---")
         st.markdown(f"### 分析結果（{latest['date']}）")
