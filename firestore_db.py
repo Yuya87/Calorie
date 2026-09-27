@@ -146,7 +146,12 @@ def fetch_daily_exercises(selected_date_str):
         return []
     try:
         docs = db.collection("exercises").where("date", "==", selected_date_str).get()
-        return [d.to_dict() for d in docs]
+        exercises = []
+        for d in docs:
+            e = d.to_dict()
+            e["doc_id"] = d.id
+            exercises.append(e)
+        return exercises
     except Exception as e:
         st.error(f"運動データの取得エラー: {e}")
         return []
@@ -155,6 +160,24 @@ def save_exercise_record(exercise_data):
     if db:
         exercise_data["created_at"] = firestore.SERVER_TIMESTAMP
         db.collection("exercises").add(exercise_data)
+
+def update_exercise(doc_id, exercise_data):
+    if db and doc_id:
+        try:
+            db.collection("exercises").document(doc_id).update(exercise_data)
+            return True
+        except Exception as e:
+            st.error(f"運動データの更新に失敗しました: {e}")
+    return False
+
+def delete_exercise(doc_id):
+    if db and doc_id:
+        try:
+            db.collection("exercises").document(doc_id).delete()
+            return True
+        except Exception as e:
+            st.error(f"運動データの削除に失敗しました: {e}")
+    return False
 
 # ---------------------------------------------------------
 # 体組成データ (body_composition)
