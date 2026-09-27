@@ -38,6 +38,10 @@ st.markdown(
     <style>
     .block-container { padding-top: 2.5rem; }
     .app-title { font-size: 1.4rem; font-weight: 700; margin: 0 0 0.25rem 0; line-height: 1.3; }
+    /* セクション見出し（st.subheader / ### / ####）を縮小 */
+    .block-container h2 { font-size: 1.2rem !important; padding: 0.4rem 0 0.2rem 0 !important; }
+    .block-container h3 { font-size: 1.05rem !important; padding: 0.3rem 0 0.1rem 0 !important; }
+    .block-container h4 { font-size: 0.95rem !important; padding: 0.2rem 0 0.1rem 0 !important; }
     </style>
     """,
     unsafe_allow_html=True
@@ -389,6 +393,18 @@ with tab2:
                     st.rerun()
     else:
         st.caption("本日の食事ログはありません。")
+
+    st.markdown("---")
+    st.markdown("### 運動明細")
+
+    if exercises:
+        for ex in exercises:
+            # 欠損（古いデータ等でフィールドが無い場合）は0として表示
+            duration = float(ex.get("duration_min") or 0.0)
+            burned = float(ex.get("burned_calories") or 0.0)
+            st.write(f"🏃 **{ex.get('exercise_name', '不明')}** ({duration:.0f} 分 / {burned:.0f} kcal)")
+    else:
+        st.caption("本日の運動ログはありません。")
 
 # ==============================================================================
 # TAB 3: 習慣＆体組成の分析
