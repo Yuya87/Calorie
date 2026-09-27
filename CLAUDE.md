@@ -164,6 +164,13 @@ Streamlit Community Cloud では別アプリとしてデプロイし、Secrets �
      - `overall_comment` (str): 総評・次回へのアドバイス
      - `growth_comment` (str): 過去と比べて特筆すべき変化があるときのみ。なければ空文字
      - `created_at` (TIMESTAMP): SERVER_TIMESTAMP
+3. `english_read_texts` (読み上げ用の英文)
+   - **ドキュメントID**: 自動生成
+   - **フィールド**:
+     - `title` (str): タイトル（任意。空文字可）
+     - `text` (str): 英文
+     - `created_at` (TIMESTAMP): SERVER_TIMESTAMP（一覧は新しい順）
+     - `updated_at` (TIMESTAMP): SERVER_TIMESTAMP
 
 ### 🧠 スピーチ分析の仕様（`english_ai.analyze_speech`）
 - アップロード音声（ボイスメモの m4a 等）を WAV 16kHz モノラルに変換して Gemini に渡す
@@ -175,6 +182,7 @@ Streamlit Community Cloud では別アプリとしてデプロイし、Secrets �
 - **🎤 1分スピーチ**: 今週（月〜日・日本時間）の録音有無を表示（未録音なら「今週はまだ録音していません」）。スピーチ日を選び、音声ファイルをアップロード→Gemini分析→音声を Cloud Storage、結果を Firestore に保存→結果表示
 - **📈 積み上げ**: 累計・今月・今週の時間と連続記録日数、日別ヒートマップ（過去16週・月曜始まり）、累計時間の推移、週ごとの技能別時間（過去12週・積み上げ棒）、技能別の累計時間
   - 技能の配色は `SKILL_COLORS` で固定（並び順＝`SKILLS`）
+- **🔊 読み上げ**: タイトル（任意）と英文を入力して読み上げ・保存（保存成功で入力欄をクリア）。保存した英文の一覧（新しい順。タイトルがなければ本文の先頭40文字を表示）ごとに読み上げ・編集ポップオーバー・削除
 - **🎧 スピーチ履歴**: 点数の推移（表示項目を選択、初期は総合のみ）、過去スピーチごとに音声再生・ダウンロード（iPhoneの「ファイル」に保存可）・分析結果・削除（確認チェック付き。音声ファイルも削除）
 
 ### 🛠️ 実装上の注意
@@ -186,6 +194,8 @@ Streamlit Community Cloud では別アプリとしてデプロイし、Secrets �
 - Cloud Storage のバケット接続（`english_db.get_bucket`）は、成功時のみ保持し失敗は保持しない（`st.cache_resource` で失敗を保持すると Secrets 修正後もアプリ再起動まで復旧しないため）。接続できない場合は1分スピーチタブの先頭に原因を表示する
 - Secrets の `ENGLISH_AUDIO_BUCKET` など単独のキーは `[gcp_service_account]` などの見出しより上に書く（見出しより下に書くとその見出しの項目として扱われる）
 - 画面スタイル（タイトル縮小・見出し縮小・横並びラジオの間隔）は Body Make アプリと揃える
+- 英文の読み上げは `tts_player(text)`（ブラウザ内蔵の Web Speech API を `components.html` で埋め込み）。米国英語（`en-US`、Samantha 等の en-US 音声を優先）。速さは 0.5〜2.0 倍のスライダーで、ブラウザの localStorage に記憶して全プレーヤー共通にする。再生・速さ変更はブラウザ内で完結し Streamlit の再実行は起きない。長文は途中で止まるブラウザがあるため文ごとに分けて読み上げる
+- 読み上げは「🔊 読み上げ」タブの英文と、スピーチ分析の「自然な英語に直したスピーチ全文」に付ける（「より自然な言い回し」には付けない）
 
 ---
 

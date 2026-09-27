@@ -1,7 +1,9 @@
+import json
 import threading
 import time
 import uuid
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -77,6 +79,7 @@ if "en_uploader_ver" not in st.session_state:
 # （keyを削除するだけでは画面上に前の入力が残るため、ウィジェット生成前に初期値を代入する。
 #   初期値は session_state で与え、ウィジェット側には value/index を渡さない）
 STUDY_INPUT_DEFAULTS = {"en_minutes": 30, "en_skill": None, "en_content": ""}
+READ_TEXT_INPUT_DEFAULTS = {"rt_title": "", "rt_text": ""}
 
 def reset_inputs(flag_key, defaults):
     clear = st.session_state.pop(flag_key, False)
@@ -107,6 +110,80 @@ st.markdown('<p class="app-title">🗣️ English Growth Log</p>', unsafe_allow_
 # ------------------------------------------------------------------------------
 # 共通: スピーチ分析結果の表示
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 英文の読み上げ（ブラウザ内蔵の音声合成 Web Speech API・米国英語）
+# 再生・速さ変更はブラウザ内で完結するため、Streamlit の再実行は発生しない。
+# 速さ（0.5〜2.0倍）はブラウザに記憶し、すべての読み上げボタンで共通にする。
+# ------------------------------------------------------------------------------
+TTS_PLAYER_HTML = """
+<style>body { margin: 0; }</style>
+<div style="font-family: sans-serif; display: flex; align-items: center; gap: 8px; padding: 6px 2px;">
+  <button id="play" style="flex: none; padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; font-size: 14px; cursor: pointer; white-space: nowrap;">🔊 読み上げ</button>
+  <span style="flex: none; font-size: 13px; color: #4b5563;">速さ</span>
+  <input id="rate" type="range" min="0.5" max="2" step="0.1" value="1" style="flex: 1; min-width: 60px; max-width: 200px;">
+  <span id="rate_val" style="flex: none; font-size: 13px; color: #4b5563; min-width: 34px;">1.0x</span>
+</div>
+<script>
+const TEXT = __TEXT__;
+const synth = window.speechSynthesis;
+const playBtn = document.getElementById("play");
+const rateInput = document.getElementById("rate");
+const rateVal = document.getElementById("rate_val");
+
+function loadRate() {
+  try { const v = parseFloat(localStorage.getItem("tts_rate")); if (v >= 0.5 && v <= 2) return v; } catch (e) {}
+  return 1.0;
+}
+function saveRate(v) { try { localStorage.setItem("tts_rate", String(v)); } catch (e) {} }
+function showRate() { rateVal.textContent = parseFloat(rateInput.value).toFixed(1) + "x"; }
+rateInput.value = loadRate(); showRate();
+rateInput.addEventListener("input", () => { showRate(); saveRate(rateInput.value); });
+
+function pickVoice() {
+  const voices = synth ? synth.getVoices() : [];
+  const us = voices.filter(v => (v.lang || "").replace("_", "-").toLowerCase() === "en-us");
+  const preferred = ["Samantha", "Google US English", "Alex", "Aaron", "Nicky", "Microsoft Aria", "Microsoft Jenny"];
+  for (const name of preferred) {
+    const v = us.find(v => v.name.indexOf(name) >= 0);
+    if (v) return v;
+  }
+  return us[0] || null;
+}
+if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = () => {};
+
+let speaking = false;
+function setState(on) { speaking = on; playBtn.textContent = on ? "⏹ 停止" : "🔊 読み上げ"; }
+
+playBtn.addEventListener("click", () => {
+  if (!synth) { playBtn.textContent = "この端末は読み上げ非対応です"; return; }
+  if (speaking) { synth.cancel(); setState(false); return; }
+  synth.cancel();
+  // 長文は途中で止まるブラウザがあるため、文ごとに分けて順番に読み上げる
+  const sentences = TEXT.match(/[^.!?\\n]+[.!?]*/g) || [TEXT];
+  const voice = pickVoice();
+  const rate = parseFloat(rateInput.value);
+  sentences.map(s => s.trim()).filter(s => s).forEach((s, i, arr) => {
+    const u = new SpeechSynthesisUtterance(s);
+    u.lang = "en-US";
+    if (voice) u.voice = voice;
+    u.rate = rate;
+    if (i === arr.length - 1) { u.onend = () => setState(false); }
+    u.onerror = () => setState(false);
+    synth.speak(u);
+  });
+  setState(true);
+});
+</script>
+"""
+
+def tts_player(text):
+    """英文の読み上げボタン（速さ調整つき）を表示する"""
+    if not text or not text.strip():
+        return
+    # </script> などで HTML が壊れないようにエスケープして埋め込む
+    text_js = json.dumps(text).replace("</", "<\\/")
+    components.html(TTS_PLAYER_HTML.replace("__TEXT__", text_js), height=50)
+
 def render_speech_result(sp):
     scores = sp.get("scores", {}) or {}
     st.metric("総合", f"{scores.get('total', 0)} 点")
@@ -130,6 +207,7 @@ def render_speech_result(sp):
 
     if sp.get("natural_version"):
         with st.expander("✨ 自然な英語に直したスピーチ全文"):
+            tts_player(sp["natural_version"])
             st.write(sp["natural_version"])
 
 def process_speech(audio_bytes, filename, speech_date_str, past_speeches):
@@ -235,11 +313,12 @@ def pick_past_speeches(speeches, speech_date_str):
         return [closest] + recent
     return recent
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📝 勉強ログ",
     "🎤 1分スピーチ",
     "📈 積み上げ",
-    "🎧 スピーチ履歴"
+    "🎧 スピーチ履歴",
+    "🔊 読み上げ"
 ])
 
 # ==============================================================================
@@ -533,3 +612,61 @@ with tab4:
                         st.session_state.pop("latest_speech", None)
                         st.success("削除しました。")
                         st.rerun()
+
+# ==============================================================================
+# TAB 5: 読み上げ
+# ==============================================================================
+with tab5:
+    st.subheader("🔊 英文の読み上げ")
+    st.caption("入力した英文を米国英語で読み上げます。速さは 0.5〜2.0 倍で調整でき、端末に記憶されます。")
+
+    # 前回の保存が成功していれば入力欄を初期状態に戻す
+    reset_inputs("clear_read_text_inputs", READ_TEXT_INPUT_DEFAULTS)
+
+    rt_title = st.text_input("タイトル（任意）", placeholder="例: 自己紹介、週末の出来事 など", key="rt_title")
+    rt_text = st.text_area("英文", placeholder="例: Last weekend, I went hiking with my family.", height=150, key="rt_text")
+    tts_player(rt_text)
+
+    if st.button("英文を保存"):
+        if not rt_text.strip():
+            st.warning("英文を入力してください。")
+        else:
+            edb.save_read_text(rt_title.strip(), rt_text.strip())
+            st.session_state["read_text_saved_msg"] = True
+            st.session_state["clear_read_text_inputs"] = True
+            st.rerun()
+
+    if st.session_state.pop("read_text_saved_msg", False):
+        st.success("英文を保存しました！")
+
+    st.markdown("---")
+    st.markdown("### 保存した英文")
+    read_texts = edb.fetch_read_texts()
+    if not read_texts:
+        st.caption("保存した英文はありません。")
+    for rt in read_texts:
+        rt_id = rt["doc_id"]
+        text = rt.get("text", "")
+        label = rt.get("title") or (text[:40] + ("…" if len(text) > 40 else ""))
+        with st.expander(label):
+            tts_player(text)
+            st.write(text)
+
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                with st.popover("編集"):
+                    with st.form(f"edit_rt_{rt_id}"):
+                        edit_title = st.text_input("タイトル（任意）", value=rt.get("title", ""))
+                        edit_text = st.text_area("英文", value=text, height=150)
+                        if st.form_submit_button("保存"):
+                            if not edit_text.strip():
+                                st.warning("英文を入力してください。")
+                            else:
+                                edb.update_read_text(rt_id, edit_title.strip(), edit_text.strip())
+                                st.success("更新しました。")
+                                st.rerun()
+            with col_r2:
+                if st.button("削除", key=f"del_rt_{rt_id}"):
+                    edb.delete_read_text(rt_id)
+                    st.success("削除しました。")
+                    st.rerun()
