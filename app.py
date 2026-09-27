@@ -42,6 +42,9 @@ st.markdown(
     .block-container h2 { font-size: 1.2rem !important; padding: 0.4rem 0 0.2rem 0 !important; }
     .block-container h3 { font-size: 1.05rem !important; padding: 0.3rem 0 0.1rem 0 !important; }
     .block-container h4 { font-size: 0.95rem !important; padding: 0.2rem 0 0.1rem 0 !important; }
+    /* 横並びラジオボタンの間隔を詰め、スマホ幅でも1行に収める */
+    [data-testid="stRadio"] div[role="radiogroup"][aria-orientation="horizontal"] { gap: 0.1rem 0.6rem !important; }
+    [data-testid="stRadio"] div[role="radiogroup"] label > div { gap: 0.25rem !important; }
     </style>
     """,
     unsafe_allow_html=True
@@ -399,10 +402,39 @@ with tab2:
 
     if exercises:
         for ex in exercises:
+            col_e1, col_e2, col_e3 = st.columns([6, 2, 2])
             # 欠損（古いデータ等でフィールドが無い場合）は0として表示
+            ex_name = ex.get("exercise_name", "不明")
             duration = float(ex.get("duration_min") or 0.0)
             burned = float(ex.get("burned_calories") or 0.0)
-            st.write(f"🏃 **{ex.get('exercise_name', '不明')}** ({duration:.0f} 分 / {burned:.0f} kcal)")
+            col_e1.write(f"🏃 **{ex_name}** ({duration:.0f} 分 / {burned:.0f} kcal)")
+
+            ex_id = ex.get("doc_id")
+
+            # インライン編集ポップオーバー
+            with col_e2:
+                if ex_id:
+                    with st.popover("編集"):
+                        with st.form(f"edit_ex_{ex_id}"):
+                            edit_ex_name = st.text_input("種目名", value=ex_name)
+                            edit_duration = st.number_input("実施時間 (分)", value=duration, min_value=0.0, step=5.0)
+                            edit_burned = st.number_input("消費カロリー (kcal)", value=burned, min_value=0.0, step=10.0)
+
+                            if st.form_submit_button("保存"):
+                                db.update_exercise(ex_id, {
+                                    "exercise_name": edit_ex_name,
+                                    "duration_min": float(edit_duration),
+                                    "burned_calories": float(edit_burned)
+                                })
+                                st.success("更新しました。")
+                                st.rerun()
+
+            # 削除ボタン
+            with col_e3:
+                if ex_id and st.button("削除", key=f"del_ex_{ex_id}"):
+                    db.delete_exercise(ex_id)
+                    st.success("削除しました。")
+                    st.rerun()
     else:
         st.caption("本日の運動ログはありません。")
 
