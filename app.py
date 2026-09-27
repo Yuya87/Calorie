@@ -20,15 +20,19 @@ st.set_page_config(
 if "selected_date" not in st.session_state:
     st.session_state["selected_date"] = date.today()
 
-# 登録成功後に入力欄をクリアするためのウィジェットkey
-# （ウィジェット生成前にkeyを削除すると初期値に戻る。生成後の値変更はエラーになるため、フラグ＋rerunで次回描画時に削除する）
-MEAL_INPUT_KEYS = ["meal_type", "meal_text", "is_eating_out", "restaurant_name", "dining_partners", "eating_out_comment"]
-EXERCISE_INPUT_KEYS = ["exercise_text"]
+# 登録成功後にクリアする入力ウィジェットの key と初期値
+# （keyを削除するだけでは画面上に前の入力が残るため、ウィジェット生成前に初期値を代入する。
+#   生成後の代入はエラーになるので、保存時はフラグを立てて rerun し、次回描画の冒頭で代入する。
+#   初期値は session_state で与え、ウィジェット側には value/index を渡さない）
+MEAL_INPUT_DEFAULTS = {"meal_type": "不明", "meal_text": "", "is_eating_out": False,
+                       "restaurant_name": "", "dining_partners": "", "eating_out_comment": ""}
+EXERCISE_INPUT_DEFAULTS = {"exercise_text": ""}
 
-def clear_inputs(flag_key, widget_keys):
-    if st.session_state.pop(flag_key, False):
-        for k in widget_keys:
-            st.session_state.pop(k, None)
+def reset_inputs(flag_key, defaults):
+    clear = st.session_state.pop(flag_key, False)
+    for k, v in defaults.items():
+        if clear or k not in st.session_state:
+            st.session_state[k] = v
 
 # ------------------------------------------------------------------------------
 # スマホ向けのコンパクト表示（上部余白の削減・タイトル縮小）
@@ -152,9 +156,9 @@ with tab1:
                     st.rerun()
 
     # 前回の保存が成功していれば入力欄を初期状態に戻す
-    clear_inputs("clear_meal_inputs", MEAL_INPUT_KEYS)
+    reset_inputs("clear_meal_inputs", MEAL_INPUT_DEFAULTS)
 
-    meal_type = st.radio("食事種別", ["朝食", "昼食", "夕食", "間食", "不明"], index=4, horizontal=True, key="meal_type")
+    meal_type = st.radio("食事種別", ["朝食", "昼食", "夕食", "間食", "不明"], horizontal=True, key="meal_type")
     meal_text = st.text_area("食事内容（AI解析テキスト）", placeholder="例: ラーメンと餃子を食べた。ビールも1杯飲んだ。", key="meal_text")
     
     is_eating_out = st.checkbox("外食・会食フラグ", key="is_eating_out")
@@ -228,7 +232,7 @@ with tab1:
         st.rerun()
         
     # 前回の保存が成功していれば入力欄を初期状態に戻す
-    clear_inputs("clear_exercise_inputs", EXERCISE_INPUT_KEYS)
+    reset_inputs("clear_exercise_inputs", EXERCISE_INPUT_DEFAULTS)
 
     exercise_text = st.text_input("運動内容（AI解析テキスト）", placeholder="例: ベンチプレス 45分、ジョギング 20分", key="exercise_text")
     if st.button("AIで解析して運動ログを保存"):
