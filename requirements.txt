@@ -4,3 +4,5 @@ pandas
 plotly
 pillow
 google-cloud-firestore
+google-cloud-storage
+imageio-ffmpeg

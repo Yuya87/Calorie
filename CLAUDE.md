@@ -119,12 +119,71 @@
 ### 🛠️ 実装上の注意
 - 日付ごとに初期値が変わる入力ウィジェット（習慣ラジオ・メモ等）は、`key` に日付を含める（例: `key=f"habit_gym_{date_str}"`）。固定keyだと日付を変えても前の選択が残る。
 - `st.date_input` に `value=st.session_state[...]` を渡して同じ session_state を上書きする書き方は、2回目以降の変更が無視されるため使わない（`key` で連動させる）。
-- 登録成功後の入力欄クリアは、保存時にフラグ（例: `clear_meal_inputs`）を立てて `st.rerun()` し、次回描画でウィジェット生成前に該当keyを `session_state` から削除する（生成後のkeyへの代入はエラーになる）。
+- 登録成功後の入力欄クリアは、保存時にフラグ（例: `clear_meal_inputs`）を立てて `st.rerun()` し、次回描画でウィジェット生成前に該当keyへ初期値を**代入**する（`reset_inputs`）。keyを削除するだけではサーバー側の値は消えても画面上に前の入力が残る。生成後のkeyへの代入はエラーになる。初期値は session_state で与え、ウィジェット側には `value`/`index` を渡さない。
+- `st.file_uploader` は session_state でクリアできないため、key にバージョン番号を含めて保存成功時に番号を上げる。
 - スマホ表示を考慮し、ラジオボタンは `horizontal=True` で横並びにする。タイトルは `st.title` ではなくCSSで縮小した見出しを使い、上部余白も詰めている。セクション見出し（h2〜h4）もCSSで縮小している。横並びラジオはCSSで選択肢間・丸と文字の間隔を詰め、スマホ幅でも1行に収めている。
 
 ---
 
-# 4. 開発時の行動指針・重要ルール
+# 4. 英語学習アプリ（English Growth Log）
+
+Body Make アプリとは別の Streamlit アプリ（起動ファイル `english_app.py`）。同じリポジトリ・同じ Firestore / Gemini の設定を流用する。
+Streamlit Community Cloud では別アプリとしてデプロイし、Secrets も個別に設定する（`pages/` フォルダは作らない。作ると `app.py` のページとして自動で取り込まれる）。
+
+### 📂 ファイル構成
+1. `english_db.py`: 英語アプリ用の Firestore CRUD と Cloud Storage（音声ファイル）操作。Firestore クライアントは `firestore_db.db` を流用
+2. `english_ai.py`: 音声の WAV 変換（`imageio-ffmpeg`）と Gemini による1分スピーチ分析。Gemini クライアントは `ai_services.ai_client` を流用
+3. `english_app.py`: 英語アプリの画面
+- Body Make 側のファイル（`app.py`, `firestore_db.py`, `ai_services.py`）の変更は英語アプリにも影響するため注意する。
+
+### 🔑 Secrets（英語アプリ用に追加）
+- `ENGLISH_AUDIO_BUCKET`: 音声保存用の Cloud Storage バケット名（非公開バケット。サービスアカウントに書き込み権限が必要）
+- `gcp_service_account`, `GEMINI_API_KEY` は Body Make と同じ値
+
+### 🗄️ Firestore / Cloud Storage データ構造
+1. `english_study_logs` (勉強ログ)
+   - **ドキュメントID**: 自動生成
+   - **フィールド**:
+     - `date` (str): YYYY-MM-DD
+     - `minutes` (float): 勉強時間 (分)
+     - `skill` (str): 技能（学習の目的で1つだけ選択）「リスニング」「スピーキング」「リーディング」「ライティング」「語彙」「文法」「発音」
+       ※ 技能別の合計が総勉強時間と一致するよう、複数選択にはしない
+     - `content` (str): 勉強内容（自由入力）
+     - `created_at` (TIMESTAMP): SERVER_TIMESTAMP
+2. `english_speeches` (1分スピーチ)
+   - **ドキュメントID**: 自動生成
+   - **フィールド**:
+     - `date` (str): YYYY-MM-DD
+     - `audio_path` (str): Cloud Storage 内のパス（`english_speeches/{date}_{8桁hex}.{拡張子}`）。音声はアップロードされた元ファイルのまま保存
+     - `audio_content_type` (str): 音声の Content-Type（m4a は `audio/mp4`）
+     - `original_filename` (str): アップロード時のファイル名
+     - `transcript` (str): 文字起こし（言いよどみも残す）
+     - `natural_version` (str): 自然な英語に直したスピーチ全文
+     - `suggestions` (list): より自然な言い回し `{original, better, reason}` のリスト
+     - `scores` (map): `total`（総合）, `grammar`（文法）, `vocabulary`（語彙）, `fluency`（流暢さ）, `content`（内容の伝わりやすさ）, `pronunciation`（発音）。各0〜100の整数
+     - `overall_comment` (str): 総評・次回へのアドバイス
+     - `growth_comment` (str): 過去と比べて特筆すべき変化があるときのみ。なければ空文字
+     - `created_at` (TIMESTAMP): SERVER_TIMESTAMP
+
+### 🧠 スピーチ分析の仕様（`english_ai.analyze_speech`）
+- アップロード音声（ボイスメモの m4a 等）を WAV 16kHz モノラルに変換して Gemini に渡す
+- 点数は CEFR に対応づけた基準（`SCORING_RUBRIC`）で採点する（100点＝教養あるネイティブ相当/C2上位、70〜84点＝C1、55〜69点＝B2 など）
+- 成長コメント用に、過去スピーチの文字起こしと点数（直近4回＋約90日前に最も近い1回）を渡す。過去の音声そのものは渡さない
+
+### 🖥️ 画面構成（タブ）
+- **📝 勉強ログ**: 記録対象日・勉強時間（分）・技能（横並びラジオで1つ選択。未選択では保存不可）・勉強内容を入力。保存成功で入力欄をクリア。その日の記録一覧（合計時間表示）と編集ポップオーバー・削除
+- **🎤 1分スピーチ**: 今週（月〜日・日本時間）の録音有無を表示（未録音なら「今週はまだ録音していません」）。スピーチ日を選び、音声ファイルをアップロード→Gemini分析→音声を Cloud Storage、結果を Firestore に保存→結果表示
+- **📈 積み上げ**: 累計・今月・今週の時間と連続記録日数、日別ヒートマップ（過去16週・月曜始まり）、累計時間の推移、週ごとの技能別時間（過去12週・積み上げ棒）、技能別の累計時間
+  - 技能の配色は `SKILL_COLORS` で固定（並び順＝`SKILLS`）
+- **🎧 スピーチ履歴**: 点数の推移（表示項目を選択、初期は総合のみ）、過去スピーチごとに音声再生・ダウンロード（iPhoneの「ファイル」に保存可）・分析結果・削除（確認チェック付き。音声ファイルも削除）
+
+### 🛠️ 実装上の注意
+- Streamlit Community Cloud のサーバーは UTC のため、「今日」「今週」は `today_jst()`（日本時間）で判定する
+- 画面スタイル（タイトル縮小・見出し縮小・横並びラジオの間隔）は Body Make アプリと揃える
+
+---
+
+# 5. 開発時の行動指針・重要ルール
 
 【最優先行動ルール: ヒアリング・リスク確認】
 1. **要件の明確化**: 開発者からの変更要望に抽象的な部分や複数の解釈が成り立つ場合は、実装前にヒアリングを行い要件を明確化すること。
