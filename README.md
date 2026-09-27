@@ -5,7 +5,7 @@ Streamlit 製の2つのアプリを収録しています。Firestore / Gemini �
 | アプリ | 起動ファイル | 内容 |
 | --- | --- | --- |
 | AI Body Make & Habit Tracker | `app.py` | 食事・運動・習慣・体組成・ジャーナリングを記録し、Gemini で解析・フィードバック |
-| English Growth Log | `english_app.py` | 英語の勉強ログと積み上げの可視化、週1回の1分スピーチ音声を Gemini で分析（文字起こし・自然な言い回し・点数） |
+| English Growth Log | `english_app.py` | 英語の勉強ログと積み上げの可視化、週1回の1分スピーチ音声を Gemini で分析（文字起こし・自然な言い回し・点数）、英文の読み上げ（米国英語・速さ調整） |
 
 - データベース: Google Cloud Firestore
 - AI: Gemini（`google-genai` SDK）

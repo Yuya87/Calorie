@@ -174,3 +174,48 @@ def delete_speech(doc_id, audio_path):
         except Exception as e:
             st.error(f"スピーチの削除に失敗しました: {e}")
     return False
+
+# ---------------------------------------------------------
+# 読み上げ用の英文 (english_read_texts)
+# ---------------------------------------------------------
+def fetch_read_texts():
+    """保存した英文を新しい順で返す"""
+    if not db:
+        return []
+    try:
+        items = _with_id(db.collection("english_read_texts").get())
+        return sorted(items, key=lambda t: str(t.get("created_at") or ""), reverse=True)
+    except Exception as e:
+        st.error(f"英文の取得エラー: {e}")
+        return []
+
+def save_read_text(title, text):
+    if db:
+        db.collection("english_read_texts").add({
+            "title": title,
+            "text": text,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+
+def update_read_text(doc_id, title, text):
+    if db and doc_id:
+        try:
+            db.collection("english_read_texts").document(doc_id).update({
+                "title": title,
+                "text": text,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            })
+            return True
+        except Exception as e:
+            st.error(f"英文の更新に失敗しました: {e}")
+    return False
+
+def delete_read_text(doc_id):
+    if db and doc_id:
+        try:
+            db.collection("english_read_texts").document(doc_id).delete()
+            return True
+        except Exception as e:
+            st.error(f"英文の削除に失敗しました: {e}")
+    return False
