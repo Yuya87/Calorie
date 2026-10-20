@@ -199,7 +199,40 @@ Streamlit Community Cloud では別アプリとしてデプロイし、Secrets �
 
 ---
 
-# 5. 開発時の行動指針・重要ルール
+# 5. 新アプリ（Growth Log / `web/`・Next.js 版）
+
+Streamlit 版の起動待ち（無料プランの休止）を解消するため、2つのアプリを1つの Web アプリ（PWA）に統合して作り直している。
+移行は **英語アプリ → Body Make** の順。移行完了までは Streamlit 版も並行稼働し、**同じ Firestore コレクション・フィールドを読み書きする**（フィールド名は snake_case のまま。互換性を壊さないこと）。
+
+### 技術スタック
+- Next.js 15（App Router / TypeScript）、Tailwind CSS v4、Recharts
+- デプロイ: Vercel（無料プラン。Root Directory = `web`）
+- ログイン: NextAuth（Google アカウント）。`ALLOWED_EMAILS` のアカウントのみ許可。`middleware.ts` でログイン画面・認証API・PWA用ファイル以外を保護
+- データ: `firebase-admin`（サービスアカウント）で Firestore / Cloud Storage にサーバー側からアクセス
+- AI: `@google/genai`（モデルは `GEMINI_MODEL`、既定 `gemini-3.6-flash`）。キーはサーバー側のみ
+- 環境変数は `web/.env.example` を参照（Vercel の Environment Variables に設定）
+
+### 📂 ディレクトリ構成（`web/`）
+- `app/` 画面（`/english/{log,speech,progress,history,read}`・`/body`（移行準備中。`BODY_APP_URL` へのリンク）・`/login`）と API（`app/api/...`）
+- `components/` 画面部品（`TtsPlayer`、`BottomNav`、`english/*`）
+- `lib/english/store.ts` 英語アプリのデータ操作（Firestore / Cloud Storage）。`lib/english/actions.ts` Server Actions（保存・更新・削除）。`lib/english/ai.ts` スピーチ分析（プロンプト・採点基準は Streamlit 版と同じ）
+- `lib/date.ts` 日付は "YYYY-MM-DD" 文字列。「今日」は日本時間（`todayJst`）
+
+### 英語アプリの実装メモ（Next.js 版）
+- 画面構成・機能は Streamlit 版（第4章）と同じ。画面下のナビで「からだ／英語」を切り替える
+- スピーチ音声はブラウザ内で WAV 16kHz モノラルに変換（`lib/english/wav.ts`）し、元音声と一緒に `POST /api/english/speeches` へ送る（合計 4.3MB まで。Vercel の上限 4.5MB のため）
+- 分析は `after()` でレスポンス後に実行し、状態を Firestore の `english_speech_jobs` に保存する。画面は `GET /api/english/jobs/[id]` を3秒ごとに確認し、完了したら結果を表示。画面を閉じても分析・保存は続き、開き直すと実行中のジョブ（10分以内）の進み具合を表示する
+- 音声の再生・ダウンロードは `GET /api/english/speeches/[id]/audio`（iPhone の Safari 用に Range リクエスト（206）に対応。`?download=1` で保存）
+- ローカル開発は `MOCK_BACKEND=1` でダミーデータ・ログインなしで動く（Vercel 上では無効）
+
+### 追加コレクション
+- `english_speech_jobs`（スピーチ分析ジョブ。Next.js 版のみ使用）
+  - **ドキュメントID**: 自動生成
+  - **フィールド**: `status` (str: "running" / "done" / "error"), `date` (str), `started_at` (TIMESTAMP), `speech_id` (str・完了時), `error` (str・失敗時)
+
+---
+
+# 6. 開発時の行動指針・重要ルール
 
 【最優先行動ルール: ヒアリング・リスク確認】
 1. **要件の明確化**: 開発者からの変更要望に抽象的な部分や複数の解釈が成り立つ場合は、実装前にヒアリングを行い要件を明確化すること。

@@ -1,6 +1,8 @@
 # Calorie
 
-Streamlit 製の2つのアプリを収録しています。Firestore / Gemini の設定は共通です。
+Streamlit 製の2つのアプリと、それらを1つに統合する新しい Web アプリ（`web/`・Next.js 版「Growth Log」）を収録しています。Firestore / Gemini の設定は共通です。
+
+> 新しい Web アプリは移行中です（英語アプリから移行。Body Make は Streamlit 版を引き続き利用）。設定手順は下の「Growth Log（web/）のセットアップ」を参照してください。
 
 | アプリ | 起動ファイル | 内容 |
 | --- | --- | --- |
@@ -86,3 +88,39 @@ client_x509_cert_url = "..."
 1. GCP コンソールの Cloud Storage で、音声保存用のバケットを作成します（公開アクセスの防止は有効のまま）。
 2. バケットの「権限」で、サービスアカウント（`gcp_service_account` の `client_email`）に「Storage オブジェクト ユーザー」ロールを付与します。
 3. Secrets の先頭に `ENGLISH_AUDIO_BUCKET = "バケット名"` を追加します。
+
+## Growth Log（web/）のセットアップ
+
+Streamlit 版の起動待ちをなくすため、Vercel（無料プラン）で動く Next.js 製の Web アプリに作り直しています。iPhone ではホーム画面に追加してアプリのように使えます。
+
+### 1. Google ログイン用の OAuth クライアントを作る（GCP コンソール）
+
+1. 「API とサービス」→「OAuth 同意画面」で、ユーザーの種類「外部」を選んで作成します（アプリ名・メールアドレスを入力。公開ステータスは「テスト」のままで構いません）。
+2. 「テストユーザー」に自分の Google アカウントを追加します。
+3. 「認証情報」→「認証情報を作成」→「OAuth クライアント ID」→ 種類「ウェブ アプリケーション」で作成します。
+4. 「承認済みのリダイレクト URI」に `https://<Vercel のドメイン>/api/auth/callback/google` を追加します（ドメインは手順2で決まります。ローカルで試す場合は `http://localhost:3000/api/auth/callback/google` も追加）。
+5. 表示されたクライアント ID とクライアント シークレットを控えます。
+
+### 2. Vercel にデプロイする
+
+1. https://vercel.com に GitHub アカウントでサインアップします（Hobby プラン・無料）。
+2. 「Add New… → Project」でこのリポジトリを選び、**Root Directory に `web`** を指定します。
+3. 「Environment Variables」に `web/.env.example` の項目を設定します。
+   - `GCP_PROJECT_ID` / `GCP_CLIENT_EMAIL` / `GCP_PRIVATE_KEY` は Streamlit の Secrets の `[gcp_service_account]` の `project_id` / `client_email` / `private_key` の値です。
+   - `NEXTAUTH_SECRET` は任意のランダムな文字列（32文字以上）、`NEXTAUTH_URL` は `https://<Vercel のドメイン>` です。
+   - `ALLOWED_EMAILS` にはログインを許可する自分の Google アカウントを書きます。
+4. 「Deploy」を押します。表示されたドメインを手順1-4のリダイレクト URI に追加します。
+
+### 3. iPhone のホーム画面に追加する
+
+Safari でアプリを開き、共有ボタン →「ホーム画面に追加」を選びます。
+
+### ローカルでの実行
+
+```bash
+cd web
+npm install
+cp .env.example .env.local   # 値を設定（MOCK_BACKEND=1 にするとダミーデータ・ログインなしで動く）
+npm run dev                  # http://localhost:3000
+```
+

@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f7f7f5;
+  --card: #ffffff;
+  --ink: #1f2937;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2a78d6;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* iPhone の入力欄でズームされないよう 16px 以上にする */
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 14px;
+  line-height: 1.2;
+}
+.btn:disabled {
+  opacity: 0.5;
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-danger {
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.field {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.alert {
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+.alert-info { background: #e8f1fc; color: #1c4f8f; }
+.alert-success { background: #e7f6ec; color: #1d6b35; }
+.alert-warning { background: #fff6dc; color: #7a5a00; }
+.alert-error { background: #fdecec; color: #a12626; }
+
+.chip {
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 13px;
+  background: #fff;
+}
+.chip[aria-pressed="true"],
+.chip[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
